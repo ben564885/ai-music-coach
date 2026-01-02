@@ -7,7 +7,7 @@ export const API_BASE_URL = __DEV__
 // Note: Anon key is safe to expose in client-side code (it's public by design)
 // Get these from Supabase Dashboard → Settings → API
 export const SUPABASE_URL = 'https://zugupjngontrrcroykot.supabase.co';
-export const SUPABASE_ANON_KEY = 'your_supabase_anon_key_here';
+export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'your_supabase_anon_key_here';
 
 // BLE Configuration
 export const T5AI_DEVICE_NAME = 'T5AI-MusicCoach';

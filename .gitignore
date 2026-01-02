@@ -48,3 +48,4 @@ recordings/
 *.flac
 config/secrets.json
 
+mobile-app/.env
