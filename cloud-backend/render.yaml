@@ -1,0 +1,14 @@
+# Render.com configuration
+services:
+  - type: web
+    name: ai-music-coach-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: PYTHON_VERSION
+        value: 3.9.18
+    healthCheckPath: /health
+

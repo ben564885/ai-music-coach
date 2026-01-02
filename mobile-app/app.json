@@ -1,0 +1,60 @@
+{
+  "expo": {
+    "name": "AI Music Coach",
+    "slug": "ai-music-coach",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aimusiccoach.app",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "This app needs Bluetooth to connect to your T5AI music coach device.",
+        "NSBluetoothPeripheralUsageDescription": "This app needs Bluetooth to communicate with your T5AI device.",
+        "NSCameraUsageDescription": "This app needs camera access to capture sheet music photos.",
+        "NSPhotoLibraryUsageDescription": "This app needs photo library access to select sheet music images."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.aimusiccoach.app",
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-image-picker",
+      "expo-document-picker",
+      [
+        "react-native-ble-plx",
+        {
+          "bluetoothPermission": "This app needs Bluetooth to connect to your T5AI music coach device."
+        }
+      ]
+    ]
+  }
+}
+
