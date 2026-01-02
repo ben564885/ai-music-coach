@@ -10,21 +10,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Optional: JWT secret for fallback manual verification
+# Only needed if supabase.auth.get_user() doesn't work with your key
+JWT_SECRET = os.getenv('SUPABASE_JWT_SECRET')
+
 
 def verify_token(token: str) -> dict:
     """
-    Verify Supabase JWT token using Supabase client
-    Returns user_id and email if valid, None otherwise
+    Verify Supabase JWT token.
     
-    This approach is more secure than manually verifying JWTs
-    because Supabase handles the verification server-side.
+    Tries multiple methods:
+    1. Supabase client's auth.get_user() - works with service_role key
+    2. Manual JWT decode - works if you have JWT_SECRET set
+    
+    Returns user_id and email if valid, None otherwise.
     """
+    # Remove 'Bearer ' prefix if present
+    if token.startswith('Bearer '):
+        token = token[7:]
+    
+    # Method 1: Try Supabase client's auth API
     try:
-        # Remove 'Bearer ' prefix if present
-        if token.startswith('Bearer '):
-            token = token[7:]
-        
-        # Use Supabase client to verify token
         supabase = get_supabase_client()
         user_response = supabase.auth.get_user(token)
         
@@ -33,11 +39,32 @@ def verify_token(token: str) -> dict:
                 'user_id': user_response.user.id,
                 'email': user_response.user.email,
             }
-        return None
     except Exception as e:
-        # Log the error for debugging
-        print(f"Token verification error: {str(e)}")
-        return None
+        print(f"Supabase auth.get_user() failed: {str(e)}")
+        # Fall through to try manual JWT verification
+    
+    # Method 2: Fallback to manual JWT decode (if JWT_SECRET is set)
+    if JWT_SECRET:
+        try:
+            from jose import jwt, JWTError
+            payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            
+            user_id = payload.get('sub')
+            email = payload.get('email')
+            
+            if user_id:
+                return {
+                    'user_id': user_id,
+                    'email': email,
+                }
+        except ImportError:
+            print("python-jose not installed. Run: pip install python-jose")
+        except JWTError as e:
+            print(f"JWT decode failed: {str(e)}")
+        except Exception as e:
+            print(f"JWT verification error: {str(e)}")
+    
+    return None
 
 
 def require_auth(f):

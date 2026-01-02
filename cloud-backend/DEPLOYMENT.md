@@ -28,11 +28,7 @@ See `CLOUDFLARE_DEPLOYMENT.md` for Cloudflare Tunnel setup.
 3. Click "New Project" → "Deploy from GitHub repo"
 4. Select your `ai_music_coach` repository
 5. Set root directory to `cloud-backend`
-6. Add environment variables:
-   - `SUPABASE_URL`
-   - `SUPABASE_SECRET_KEY` (use new Secret Key, NOT leaked service_role)
-   - `ANTHROPIC_API_KEY`
-   - `PORT=5000`
+6. Add environment variables (see "Environment Variables" section below)
 7. Railway auto-detects Python and installs dependencies
 8. Done! Get your URL (e.g., `https://your-app.railway.app`)
 
@@ -104,6 +100,44 @@ For your use case, Railway is the best choice because:
 4. **Automatic HTTPS** - No SSL certificate setup
 5. **Environment variables** - Easy to manage secrets
 6. **Great docs** - Excellent Python/Flask support
+
+## Environment Variables
+
+Create a `.env` file or set these in your cloud platform:
+
+```bash
+# Required
+SUPABASE_URL=https://your-project.supabase.co
+
+# Authentication Key - Use ONE of these options:
+# Option A: New Secret Key (from "Publishable and secret API keys" section)
+SUPABASE_SECRET_KEY=sb_secret_your_key_here
+
+# Option B: Legacy service_role key (if you rotated JWT secret via support)
+# SUPABASE_SERVICE_KEY=eyJ...your_service_role_key_here
+
+# Optional: JWT Secret for fallback auth (if Secret Key doesn't work for auth)
+# Get from Supabase Dashboard → Settings → API → JWT Secret
+# SUPABASE_JWT_SECRET=your-jwt-secret
+
+# AI Coaching
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Server
+PORT=5000
+```
+
+### Which key should you use?
+
+| Scenario | Use This |
+|----------|----------|
+| Fresh setup with new Secret Key | `SUPABASE_SECRET_KEY` |
+| Rotated JWT secret via support | `SUPABASE_SERVICE_KEY` (new service_role) |
+| Auth issues with Secret Key | Add `SUPABASE_JWT_SECRET` as fallback |
+
+The code will automatically try `SUPABASE_SECRET_KEY` first, then fall back to `SUPABASE_SERVICE_KEY`.
+
+---
 
 ## Setup Files Needed
 

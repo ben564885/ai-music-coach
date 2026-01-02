@@ -10,12 +10,22 @@ load_dotenv()
 
 # Initialize Supabase client
 supabase_url = os.getenv('SUPABASE_URL')
-# Use new Secret Key (from "Publishable and secret API keys" section)
-# This replaces the leaked legacy service_role key
-supabase_key = os.getenv('SUPABASE_SECRET_KEY')
 
-if not supabase_url or not supabase_key:
-    raise ValueError("SUPABASE_URL and SUPABASE_SECRET_KEY must be set in .env")
+# Support both new Secret Key AND legacy service_role key
+# Priority: SUPABASE_SECRET_KEY > SUPABASE_SERVICE_KEY
+# - New Secret Key: From "Publishable and secret API keys" section
+# - Legacy service_role: From "Project API keys" section (if you rotated JWT secret)
+supabase_key = os.getenv('SUPABASE_SECRET_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
+
+if not supabase_url:
+    raise ValueError("SUPABASE_URL must be set in .env")
+
+if not supabase_key:
+    raise ValueError(
+        "Either SUPABASE_SECRET_KEY or SUPABASE_SERVICE_KEY must be set in .env.\n"
+        "  - SUPABASE_SECRET_KEY: New key from 'Publishable and secret API keys' section\n"
+        "  - SUPABASE_SERVICE_KEY: Legacy service_role key (if you contacted support to rotate)"
+    )
 
 supabase: Client = create_client(supabase_url, supabase_key)
 
