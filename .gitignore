@@ -49,3 +49,4 @@ recordings/
 config/secrets.json
 
 mobile-app/.env
+supabase/
