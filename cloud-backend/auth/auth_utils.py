@@ -4,42 +4,39 @@ Authentication utilities for verifying Supabase JWT tokens
 
 from functools import wraps
 from flask import request, jsonify
-from jose import jwt, JWTError
+from database.supabase_client import get_supabase_client
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Supabase JWT secret (get from Supabase dashboard → Settings → API → JWT Secret)
-JWT_SECRET = os.getenv('SUPABASE_JWT_SECRET')
-
 
 def verify_token(token: str) -> dict:
     """
-    Verify Supabase JWT token and return user info
+    Verify Supabase JWT token using Supabase client
     Returns user_id and email if valid, None otherwise
-    """
-    if not JWT_SECRET:
-        raise ValueError("SUPABASE_JWT_SECRET must be set in .env")
     
+    This approach is more secure than manually verifying JWTs
+    because Supabase handles the verification server-side.
+    """
     try:
         # Remove 'Bearer ' prefix if present
         if token.startswith('Bearer '):
             token = token[7:]
         
-        # Decode and verify token
-        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        # Use Supabase client to verify token
+        supabase = get_supabase_client()
+        user_response = supabase.auth.get_user(token)
         
-        # Extract user info from Supabase token structure
-        user_id = payload.get('sub')
-        email = payload.get('email')
-        
-        return {
-            'user_id': user_id,
-            'email': email,
-            'payload': payload
-        }
-    except JWTError:
+        if user_response and user_response.user:
+            return {
+                'user_id': user_response.user.id,
+                'email': user_response.user.email,
+            }
+        return None
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Token verification error: {str(e)}")
         return None
 
 

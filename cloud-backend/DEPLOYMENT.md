@@ -30,8 +30,7 @@ See `CLOUDFLARE_DEPLOYMENT.md` for Cloudflare Tunnel setup.
 5. Set root directory to `cloud-backend`
 6. Add environment variables:
    - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_KEY`
-   - `SUPABASE_JWT_SECRET`
+   - `SUPABASE_SECRET_KEY` (use new Secret Key, NOT leaked service_role)
    - `ANTHROPIC_API_KEY`
    - `PORT=5000`
 7. Railway auto-detects Python and installs dependencies

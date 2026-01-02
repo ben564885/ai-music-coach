@@ -10,10 +10,12 @@ load_dotenv()
 
 # Initialize Supabase client
 supabase_url = os.getenv('SUPABASE_URL')
-supabase_key = os.getenv('SUPABASE_SERVICE_KEY')  # Use service key for backend operations
+# Use new Secret Key (from "Publishable and secret API keys" section)
+# This replaces the leaked legacy service_role key
+supabase_key = os.getenv('SUPABASE_SECRET_KEY')
 
 if not supabase_url or not supabase_key:
-    raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
+    raise ValueError("SUPABASE_URL and SUPABASE_SECRET_KEY must be set in .env")
 
 supabase: Client = create_client(supabase_url, supabase_key)
 
