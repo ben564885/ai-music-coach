@@ -50,3 +50,4 @@ config/secrets.json
 
 mobile-app/.env
 supabase/
+cloud-backend/.env
