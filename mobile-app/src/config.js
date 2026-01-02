@@ -4,10 +4,9 @@ export const API_BASE_URL = __DEV__
   : 'https://your-app.railway.app';  // Production - update with your Railway/Render URL
 
 // Supabase Configuration
-// Using new Publishable API Key (replaces legacy anon key)
-// Get from Supabase Dashboard → Settings → API → Publishable and secret API keys
-export const SUPABASE_URL = 'https://zugupjngontrrcroykot.supabase.co';
-export const SUPABASE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_23aQ-KXOZo5iLy6yR1jiWw_ME8b9UNf';
+// Get from Supabase Dashboard → Settings → API
+export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
+export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 // BLE Configuration
 export const T5AI_DEVICE_NAME = 'T5AI-MusicCoach';
