@@ -1,130 +1,61 @@
 # AI Music Coach
 
-An intelligent music practice assistant that uses the Tuya T5AI development board to analyze musical performances and provide real-time coaching feedback.
+An intelligent music practice assistant that analyzes musical performances and provides real-time coaching feedback by comparing audio recordings against reference notation retrieved via SoundSlice.
 
 ## System Architecture
 
 ```
-[Mobile App] → [T5AI Device] → [Cloud Backend] → [AI Analysis] → [Feedback]
+[Mobile App (Flutter)] → [T5AI Device] → [Cloud Backend (Flask)] → [SoundSlice (Playwright Agent)] → [Analysis] → [Feedback]
 ```
 
 ## Components
 
-### Mobile App (`mobile-app/`)
-React Native app with Expo for iOS and Android:
-- Sheet music upload (photo/PDF/MusicXML)
-- Bluetooth LE connection to T5AI device
-- Real-time mistake timeline visualization
-- Audio playback with seekable markers
-- AI coaching feedback display
+### Mobile App (`mobile_app_flutter/`)
+Cross-platform Flutter app for iOS and Android:
+- Sheet music management and upload (photo/PDF)
+- Bluetooth LE connection to T5AI device for audio control
+- Real-time mistakes and performance visualization
+- Supabase Authentication (Email/Password & Google Sign-InSync)
+- Profile management and practice statistics
 
-**Setup**: `cd mobile-app && npm install && npm start`
-
-**Testing on Phone**: 
-- Install Expo Go app on your phone
-- Run `npm start` and scan QR code
-- See `mobile-app/TESTING.md` for quick guide
-- See `mobile-app/DEPLOYMENT.md` for app store submission
+**Setup**: 
+1. `cd mobile_app_flutter`
+2. `flutter pub get`
+3. `cp .env.example .env` (Add your Supabase and Google Client IDs)
+4. `flutter run`
 
 ### Cloud Backend (`cloud-backend/`)
-Python Flask server for audio analysis:
-- Pitch detection (PYIN algorithm)
-- Timing analysis (hesitation/rushing detection)
-- Dynamics analysis
-- AI coaching feedback (Claude API)
-- RESTful API endpoints
+Python Flask server for audio analysis and OMR coordination:
+- **Sheet Music Transcription (OMR)**: 
+    - **Playwright Agent**: Automates SoundSlice's web interface for high-accuracy OMR processing.
+    - **SoundSlice Data API**: Fetches structured MusicXML for analysis.
+- **Audio Analysis**: 
+    - **Pitch Tracking**: PYIN algorithm for accurate frequency identification.
+    - **Timing Analysis**: Compares performer onsets with reference beats from notation.
+- **Coaching Engine**: Generates actionable feedback based on performance discrepancies.
 
-**Setup**: `cd cloud-backend && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
-
-**API Endpoints**:
-- `GET /health` - Health check
-- `POST /api/analyze` - Analyze performance
-- `POST /api/upload-sheet-music` - Upload sheet music
-- `POST /api/process-musicxml` - Process MusicXML
+**Setup**: 
+1. `cd cloud-backend`
+2. `python3 -m venv venv`
+3. `source venv/bin/activate`
+4. `pip install -r requirements.txt`
+5. `cp .env.example .env` (Add your SoundSlice and other credentials)
+6. `python server.py`
 
 ### T5AI Firmware (`firmware/`)
-C++ firmware for Tuya T5AI development board:
-- Audio recording (16kHz, stereo)
-- Real-time audio streaming to cloud
-- Text-to-Speech feedback output
-- BLE communication with mobile app
-- Wi-Fi connectivity
+C++ firmware for the Tuya T5AI development board:
+- Audio recording and streaming to the cloud backend via Wi-Fi.
+- Text-to-Speech (TTS) integration for spoken coaching.
+- BLE communication with the mobile app for device lifecycle management.
 
-**Configuration**: Edit `config.hpp` for Wi-Fi, backend URL, and device settings
+**Configuration**: Edit `config.hpp` to set Wi-Fi credentials, backend URL, and BLE settings.
 
-## Quick Start
+## Environment Variables
 
-### Automated Setup
-
-Run the setup script to install all dependencies:
-
-```bash
-./setup.sh
-```
-
-### Manual Setup
-
-#### Cloud Backend
-
-```bash
-cd cloud-backend
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install --upgrade pip
-pip install -r requirements.txt
-cp .env.example .env  # Then edit .env and add your ANTHROPIC_API_KEY
-python server.py
-```
-
-Or use the convenience script:
-```bash
-./start-backend.sh
-```
-
-#### Mobile App
-
-```bash
-cd mobile-app
-npm install
-npm start
-```
-
-Or use the convenience script:
-```bash
-./start-mobile.sh
-```
-
-### Configuration
-
-1. **Backend**: Edit `cloud-backend/.env` and add your `ANTHROPIC_API_KEY`
-2. **Mobile App**: Edit `mobile-app/src/config.js` to update `API_BASE_URL` if needed
-
-### Firmware Setup
-
-Edit `firmware/config.hpp` to configure:
-- Wi-Fi SSID and password
-- Cloud backend URL
-- BLE device name
-- Audio sample rate and buffer size
-
-Build with ESP-IDF or Tuya IoT Development Platform SDK.
-
-## Features
-
-- **Sheet Music Recognition**: Upload photos/PDFs and extract musical notation
-- **Real-time Analysis**: Pitch detection, timing analysis, dynamics detection
-- **AI Coaching**: Personalized feedback using Claude API
-- **Visual Timeline**: Interactive mistake markers with audio playback
-- **TTS Feedback**: Spoken coaching via T5AI onboard speaker
-
-## Development Roadmap
-
-- [x] Project structure
-- [ ] Phase 1: MVP (basic pitch detection)
-- [ ] Phase 2: Core features (OMR, TTS, dynamics)
-- [ ] Phase 3: Advanced features (multi-instrument, progress tracking)
+The project requires `.env` files for operation. Templates are provided at:
+- `cloud-backend/.env.example`
+- `mobile_app_flutter/.env.example`
 
 ## License
 
 MIT
-
