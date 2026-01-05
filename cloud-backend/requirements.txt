@@ -1,12 +1,12 @@
 flask>=3.0.0
 flask-cors>=4.0.0
 gunicorn>=21.2.0
-numpy>=1.24.0
+numpy>=2.0.0,<2.4.0
 librosa>=0.10.0
 music21>=8.3.0
 scipy>=1.10.0
 python-dotenv>=1.0.0
-anthropic>=0.18.0
+google-generativeai>=0.3.0
 pydub>=0.25.0
 Pillow>=10.0.0
 pymupdf>=1.23.0
@@ -14,4 +14,12 @@ supabase>=2.0.0
 python-jose>=3.3.0  # Optional fallback for JWT verification if new Secret Key has issues
 passlib>=1.7.4
 bcrypt>=4.0.1
+python-dateutil>=2.8.2
+inference-sdk>=1.0.0
+scikit-image>=0.17.0
+scikit-learn>=0.23.0
+imutils>=0.5.0
+oemer>=0.1.8
+requests>=2.31.0
+playwright>=1.40.0
 

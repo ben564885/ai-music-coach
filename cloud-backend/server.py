@@ -3,7 +3,7 @@ AI Music Coach Cloud Backend
 Handles audio analysis, mistake detection, and AI coaching feedback generation
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 from dotenv import load_dotenv
@@ -16,6 +16,7 @@ from analysis.audio_analyzer import AudioAnalyzer
 from analysis.coach import AICoach
 from auth.auth_utils import require_auth
 from database.repository import RecordingRepository, SheetMusicRepository
+from database.models import Recording, SheetMusic
 from database.models import Recording, SheetMusic
 
 load_dotenv()
@@ -31,13 +32,18 @@ os.makedirs(RECORDINGS_FOLDER, exist_ok=True)
 
 # Initialize components
 audio_analyzer = AudioAnalyzer()
-ai_coach = AICoach(api_key=os.getenv('ANTHROPIC_API_KEY'))
+ai_coach = AICoach(
+    api_key=os.getenv('GEMINI_API_KEY'),
+    roboflow_api_key=os.getenv('ROBOFLOW_API_KEY')
+)
 
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+
+
 
 
 @app.route('/api/auth/verify', methods=['POST'])
@@ -187,7 +193,7 @@ def get_sheet_music():
 def upload_sheet_music():
     """
     Upload and process sheet music (photo/PDF)
-    Returns structured music data in MusicXML format
+    Returns structured music data in the requested JSON format
     """
     try:
         if 'file' not in request.files:
@@ -195,38 +201,46 @@ def upload_sheet_music():
         
         file = request.files['file']
         filename = file.filename
-        title = request.form.get('title', filename)
+        title = request.form.get('title', 'Untitled')
         
         # Save uploaded file
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         file.save(file_path)
         
-        # TODO: Upload to Supabase Storage and get URL
-        file_url = f"/uploads/{filename}"
+        # Run Full AI Transcription (Dual Model Gemini)
+        print(f"Transcribing {file_path} with Gemini Dual-Model...")
         
-        # TODO: Implement OMR (Optical Music Recognition)
-        # For now, return placeholder structure
-        reference_data = {
-            'status': 'uploaded',
-            'message': 'OMR processing not yet implemented. Please provide MusicXML/MIDI directly.'
-        }
+        transcription_result = ai_coach.transcribe_image(file_path)
         
-        # Save to database
+        if not transcription_result:
+            return jsonify({'error': 'Transcription failed'}), 500
+            
+        reference_data = transcription_result.get('reference_data', {})
+        audiveris_raw_output = transcription_result.get('audiveris_raw_output', '')
+        
+        print(f"DEBUG: Saved output - reference_data: {len(reference_data.get('notes', []))} notes")
+        
+        # Create DB Record with Audiveris output as reference_data JSONB and raw output in separate column
         sheet_music = SheetMusic(
             user_id=request.user_id,
             title=title,
-            file_url=file_url,
-            reference_data=reference_data
+            file_url=file_path, # Local path for now as per reference code
+            reference_data=reference_data,  # This will be saved as JSONB in the database
+            audiveris_raw_output=audiveris_raw_output  # Raw Audiveris output in separate TEXT column
         )
         
         saved_sheet_music = SheetMusicRepository.create(sheet_music)
+        print(f"DEBUG: Sheet music saved with ID: {saved_sheet_music.id}, reference_data contains {len(saved_sheet_music.reference_data.get('notes', [])) if saved_sheet_music.reference_data else 0} notes")
         
         return jsonify({
             'success': True,
-            'sheet_music': saved_sheet_music.to_dict()
+            'sheet_music': saved_sheet_music.to_dict(),
+            'transcription': reference_data,
+            'audiveris_raw_output': audiveris_raw_output
         })
         
     except Exception as e:
+        print(f"OMR Error: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -258,6 +272,15 @@ def process_musicxml():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/uploads/<filename>')
+def serve_upload(filename):
+    """Serve uploaded files"""
+    try:
+        return send_from_directory(UPLOAD_FOLDER, filename)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 404
+
+
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 5001))
     app.run(host='0.0.0.0', port=port, debug=True)

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 import json
+from dateutil import parser
 
 
 @dataclass
@@ -38,9 +39,9 @@ class Recording:
         if data.get('mistakes') and isinstance(data['mistakes'], str):
             data['mistakes'] = json.loads(data['mistakes'])
         if data.get('created_at'):
-            data['created_at'] = datetime.fromisoformat(data['created_at'].replace('Z', '+00:00'))
+            data['created_at'] = parser.isoparse(data['created_at'])
         if data.get('updated_at'):
-            data['updated_at'] = datetime.fromisoformat(data['updated_at'].replace('Z', '+00:00'))
+            data['updated_at'] = parser.isoparse(data['updated_at'])
         return cls(**data)
 
 
@@ -52,14 +53,15 @@ class SheetMusic:
     title: str = ""
     file_url: str = ""
     reference_data: Dict[str, Any] = None
+    audiveris_raw_output: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
     def to_dict(self) -> dict:
         """Convert to dictionary for database storage"""
         data = asdict(self)
-        if self.reference_data:
-            data['reference_data'] = json.dumps(self.reference_data) if isinstance(self.reference_data, dict) else self.reference_data
+        # Keep reference_data as dict - Supabase will convert to JSONB automatically
+        # Don't convert to JSON string, Supabase Python client handles dict -> JSONB conversion
         if self.created_at:
             data['created_at'] = self.created_at.isoformat()
         if self.updated_at:
@@ -72,8 +74,7 @@ class SheetMusic:
         if data.get('reference_data') and isinstance(data['reference_data'], str):
             data['reference_data'] = json.loads(data['reference_data'])
         if data.get('created_at'):
-            data['created_at'] = datetime.fromisoformat(data['created_at'].replace('Z', '+00:00'))
+            data['created_at'] = parser.isoparse(data['created_at'])
         if data.get('updated_at'):
-            data['updated_at'] = datetime.fromisoformat(data['updated_at'].replace('Z', '+00:00'))
+            data['updated_at'] = parser.isoparse(data['updated_at'])
         return cls(**data)
-

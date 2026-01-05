@@ -48,6 +48,7 @@ recordings/
 *.flac
 config/secrets.json
 
-mobile-app/.env
+mobile_app_flutter/.env
 supabase/
 cloud-backend/.env
+mobile-app/ # Keeping this for legacy cleanup if needed
