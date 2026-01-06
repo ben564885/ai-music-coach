@@ -1,6 +1,6 @@
 /**
  * Real-Time Audio Analyzer
- * Detects notes as they're being played (not just post-recording)
+ * Detects notes as they're being played for immediate feedback
  */
 
 #ifndef REAL_TIME_ANALYZER_H
@@ -15,61 +15,70 @@
 
 // Note detection result
 struct NoteDetection {
-    char note_name[4];      // e.g., "A", "Bb"
-    uint8_t octave;         // e.g., 4
-    float frequency;        // Detected frequency in Hz
-    float confidence;       // 0.0 to 1.0
-    bool is_valid;          // Valid note detected
+  char note_name[4]; // e.g., "A", "Bb"
+  uint8_t octave;    // e.g., 4
+  float frequency;   // Detected frequency in Hz
+  float confidence;  // 0.0 to 1.0
+  bool is_valid;     // Valid note detected
+
+  NoteDetection() : octave(0), frequency(0), confidence(0), is_valid(false) {
+    note_name[0] = '\0';
+  }
 };
 
 // Expected note (from sheet music or scale)
 struct ExpectedNote {
-    char note_name[4];
-    uint8_t octave;
-    float frequency;
-    uint32_t timestamp_ms; // When this note should be played
+  char note_name[4];
+  uint8_t octave;
+  float frequency;
+  uint32_t timestamp_ms; // When this note should be played
+
+  ExpectedNote() : octave(0), frequency(0), timestamp_ms(0) {
+    note_name[0] = '\0';
+  }
 };
 
 // Real-time analyzer class
 class RealTimeAnalyzer {
 public:
-    RealTimeAnalyzer();
-    ~RealTimeAnalyzer();
-    
-    // Initialize analyzer
-    bool init();
-    
-    // Process audio chunk (called continuously during recording)
-    NoteDetection process_audio_chunk(const int16_t* audio_data, size_t samples);
-    
-    // Set expected note (from sheet music or scale)
-    void set_expected_note(const ExpectedNote& note);
-    
-    // Check if played note matches expected
-    bool check_note_match(const NoteDetection& detected, const ExpectedNote& expected);
-    
-    // Get current expected note
-    ExpectedNote get_current_expected_note() const;
-    
-    // Reset for new recording/practice session
-    void reset();
+  RealTimeAnalyzer();
+  ~RealTimeAnalyzer();
+
+  // Initialize analyzer
+  bool init();
+
+  // Process audio chunk (called continuously during recording)
+  NoteDetection process_audio_chunk(const int16_t *audio_data, size_t samples);
+
+  // Set expected note (from sheet music or scale)
+  void set_expected_note(const ExpectedNote &note);
+
+  // Check if played note matches expected
+  bool check_note_match(const NoteDetection &detected,
+                        const ExpectedNote &expected);
+
+  // Get current expected note
+  ExpectedNote get_current_expected_note() const;
+
+  // Reset for new recording/practice session
+  void reset();
 
 private:
-    ExpectedNote current_expected_note_;
-    bool has_expected_note_;
-    
-    // Pitch detection using autocorrelation
-    float detect_pitch_autocorrelation(const int16_t* audio_data, size_t samples);
-    
-    // Convert frequency to note name
-    void frequency_to_note(float frequency, char* note_name, uint8_t* octave);
-    
-    // Calculate note frequency
-    float note_to_frequency(const char* note_name, uint8_t octave);
-    
-    // Check if frequency matches note (with tolerance)
-    bool frequency_matches_note(float frequency, const char* note_name, uint8_t octave, float tolerance_hz = 10.0f);
+  ExpectedNote current_expected_note_;
+  bool has_expected_note_;
+
+  // Pitch detection using autocorrelation
+  float detect_pitch_autocorrelation(const int16_t *audio_data, size_t samples);
+
+  // Convert frequency to note name
+  void frequency_to_note(float frequency, char *note_name, uint8_t *octave);
+
+  // Calculate note frequency
+  float note_to_frequency(const char *note_name, uint8_t octave);
+
+  // Check if frequency matches note (with tolerance)
+  bool frequency_matches_note(float frequency, const char *note_name,
+                              uint8_t octave, float tolerance_hz = 10.0f);
 };
 
 #endif // REAL_TIME_ANALYZER_H
-
