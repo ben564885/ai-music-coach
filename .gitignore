@@ -53,3 +53,5 @@ supabase/
 cloud-backend/.env
 mobile-app/ # Keeping this for legacy cleanup if needed
 firmware/.env
+firmware/.build/
+TuyaOpen/
