@@ -54,4 +54,6 @@ cloud-backend/.env
 mobile-app/ # Keeping this for legacy cleanup if needed
 firmware/.env
 firmware/.build/
+firmware_copy/.env
+firmware_copy/.build/
 TuyaOpen/
