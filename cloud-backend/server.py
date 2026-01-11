@@ -12,11 +12,16 @@ import numpy as np
 from music21 import converter, note, tempo, dynamics
 import json
 from datetime import datetime
+import whisper
+import tempfile
+import base64
+import io
+from gtts import gTTS
 from analysis.audio_analyzer import AudioAnalyzer
 from analysis.coach import AICoach
 from auth.auth_utils import require_auth
-from database.repository import RecordingRepository, SheetMusicRepository, DeviceRepository
-from database.models import Recording, SheetMusic
+from database.repository import RecordingRepository, SheetMusicRepository, DeviceRepository, AnalysisRepository
+from database.models import Recording, SheetMusic, Analysis
 from database.models import Recording, SheetMusic
 
 load_dotenv()
@@ -39,6 +44,19 @@ ai_coach = AICoach(
     api_key=os.getenv('GEMINI_API_KEY'),
     roboflow_api_key=os.getenv('ROBOFLOW_API_KEY')
 )
+
+# Whisper model (loaded lazily on first use)
+whisper_model = None
+WAKE_WORD = "Hey Tuya"
+
+def get_whisper_model():
+    """Lazy load Whisper model on first use"""
+    global whisper_model
+    if whisper_model is None:
+        print("Loading Whisper model (first time - this may take a minute)...")
+        whisper_model = whisper.load_model("base")  # Use "base" for faster inference, "small" or "medium" for better accuracy
+        print("Whisper model loaded")
+    return whisper_model
 
 
 @app.route('/health', methods=['GET'])
@@ -489,21 +507,49 @@ def get_device_sheet_music():
         print(f"[/api/device/sheet-music] Found {len(sheet_music_list)} sheet music for user {user_id}")
         
         # Return simplified list (limit to most recent 10)
+        # IMPORTANT: Return LIGHTWEIGHT data for firmware - full reference_data can exceed HTTP buffer
         uploads_list = []
         for sm in sheet_music_list[:10]:
+            # Ensure id and title are never None - firmware requires both
+            if not sm.id or not sm.title:
+                print(f"[/api/device/sheet-music] Skipping sheet music with missing id or title: id={sm.id}, title={sm.title}")
+                continue
+            
+            # Extract only essential fields from reference_data (firmware has limited buffer)
+            ref_data = sm.reference_data or {}
+            lite_ref_data = {
+                'clef': ref_data.get('clef', ''),
+                'time_signature': ref_data.get('time_signature') or ref_data.get('timeSignature', '4/4'),
+                'key_signature': ref_data.get('key_signature') or ref_data.get('key', 'C'),
+                'note_count': len(ref_data.get('notes', [])) if ref_data.get('notes') else 0
+            }
+            
+            # Don't send full audiveris output - just a flag
+            has_analysis = bool(sm.audiveris_raw_output and len(sm.audiveris_raw_output) > 0)
+                
             uploads_list.append({
                 'id': sm.id,
                 'title': sm.title,
                 'created_at': sm.created_at.isoformat() if sm.created_at else None,
                 'file_url': sm.file_url if sm.file_url else None,
-                'reference_data': sm.reference_data if sm.reference_data else {},
-                'audiveris_raw_output': sm.audiveris_raw_output if sm.audiveris_raw_output else None
+                'reference_data': lite_ref_data,
+                'has_analysis': has_analysis
             })
         
-        return jsonify({
+        print(f"[/api/device/sheet-music] Returning {len(uploads_list)} items:")
+        for i, item in enumerate(uploads_list):
+            print(f"  [{i}] id={item.get('id')}, title={item.get('title')}, has_file_url={bool(item.get('file_url'))}")
+        
+        response_data = {
             'sheet_music': uploads_list,
             'count': len(uploads_list)
-        })
+        }
+        
+        # Log the actual JSON structure
+        import json
+        print(f"[/api/device/sheet-music] JSON response sample: {json.dumps(response_data, indent=2)[:500]}")
+        
+        return jsonify(response_data)
         
     except Exception as e:
         print(f"Error fetching device sheet music: {e}")
@@ -521,7 +567,7 @@ def analyze_device_recording():
     Request body:
     {
         "recording_id": "uuid",
-        "use_latest_upload": true  // if true, uses the user's most recent sheet music
+        "sheet_music_id": "uuid"  // specific sheet music to compare against
     }
     """
     try:
@@ -536,10 +582,13 @@ def analyze_device_recording():
         
         data = request.json or {}
         recording_id = data.get('recording_id')
-        use_latest_upload = data.get('use_latest_upload', True)
+        sheet_music_id = data.get('sheet_music_id')
         
         if not recording_id:
             return jsonify({'error': 'recording_id required'}), 400
+        
+        if not sheet_music_id:
+            return jsonify({'error': 'sheet_music_id required'}), 400
         
         # Get the recording
         recording = RecordingRepository.get_by_id(recording_id)
@@ -549,43 +598,210 @@ def analyze_device_recording():
         if recording.user_id != user_id:
             return jsonify({'error': 'Unauthorized'}), 403
         
-        # Get sheet music reference
-        sheet_music = None
-        if use_latest_upload:
-            # Get user's most recent sheet music with audiveris output
-            all_sheets = SheetMusicRepository.get_by_user(user_id)
-            for sheet in all_sheets:
-                if sheet.audiveris_raw_output:
-                    sheet_music = sheet
-                    break
-        
+        # Get sheet music by ID
+        sheet_music = SheetMusicRepository.get_by_id(sheet_music_id)
         if not sheet_music:
+            return jsonify({'error': 'Sheet music not found'}), 404
+        
+        if sheet_music.user_id != user_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        if not sheet_music.audiveris_raw_output:
             return jsonify({
-                'feedback': 'No sheet music with analysis found. Please upload sheet music in the app first.'
+                'feedback': 'Sheet music has no analysis data. Please re-upload in the app.'
             })
         
-        # Analyze with AI coach
+        # Construct MIDI URL from recording ID
+        # Format: {SUPABASE_URL}/storage/v1/object/public/midis/users/{user_id}/{recording_id}.mid
+        supabase_url = os.getenv('SUPABASE_URL')
+        midi_url = f"{supabase_url}/storage/v1/object/public/midis/users/{user_id}/{recording_id}.mid"
+        
+        print(f"[/api/device/analyze] Recording: {recording_id}, Sheet: {sheet_music_id}")
+        print(f"[/api/device/analyze] MIDI URL: {midi_url}")
+        
+        # Analyze with AI coach using MIDI vs sheet music
         try:
-            # Use the AI coach for audio analysis
-            feedback = ai_coach.analyze_performance_with_audio(
-                audio_url=recording.audio_url,
-                reference_data=sheet_music.audiveris_raw_output
+            feedback = ai_coach.analyze_midi_vs_sheet(
+                midi_url=midi_url,
+                musicxml_reference=sheet_music.audiveris_raw_output
             )
             
-            return jsonify({
+            # Parse the structured feedback to extract score, strength, and improvement
+            import re
+            score = 0
+            strength = ""
+            improvement = ""
+            
+            # Extract score (e.g., "Score: 7/10")
+            score_match = re.search(r'Score:\s*(\d+)/10', feedback, re.IGNORECASE)
+            if score_match:
+                score = int(score_match.group(1))
+            
+            # Extract strength (e.g., "Strength: text here.")
+            strength_match = re.search(r'Strength:\s*([^.]+(?:\.[^.]*)?)', feedback, re.IGNORECASE)
+            if strength_match:
+                strength = strength_match.group(1).strip().rstrip('.')
+            
+            # Extract improvement (e.g., "Improve: text here.")
+            improve_match = re.search(r'Improve:\s*([^.]+(?:\.[^.]*)?)', feedback, re.IGNORECASE)
+            if improve_match:
+                improvement = improve_match.group(1).strip().rstrip('.')
+            
+            # Save analysis to database
+            try:
+                analysis = Analysis(
+                    user_id=user_id,
+                    recording_id=recording_id,
+                    sheet_music_id=sheet_music_id,
+                    score=score,
+                    strength=strength,
+                    improvement=improvement,
+                    full_feedback=feedback,
+                    recording_title=recording.title,
+                    sheet_music_title=sheet_music.title
+                )
+                saved_analysis = AnalysisRepository.create(analysis)
+                print(f"[/api/device/analyze] Analysis saved with ID: {saved_analysis.id}, Score: {score}")
+            except Exception as db_error:
+                print(f"[/api/device/analyze] Failed to save analysis to DB: {db_error}")
+                # Continue anyway - don't fail the response
+            
+            # Use make_response to explicitly set headers
+            # This helps firmware HTTP clients know when response is complete
+            from flask import make_response
+            import json as json_lib
+            response_data = json_lib.dumps({
                 'feedback': feedback,
                 'recording_title': recording.title,
                 'sheet_music_title': sheet_music.title
             })
+            resp = make_response(response_data)
+            resp.headers['Content-Type'] = 'application/json'
+            resp.headers['Content-Length'] = len(response_data)
+            resp.headers['Connection'] = 'close'
+            print(f"[/api/device/analyze] Response length: {len(response_data)} bytes")
+            return resp
             
         except Exception as ai_error:
             print(f"AI analysis error: {ai_error}")
-            return jsonify({
+            import json as json_lib
+            response_data = json_lib.dumps({
                 'feedback': f'Analysis failed: {str(ai_error)}'
             })
+            resp = make_response(response_data)
+            resp.headers['Content-Type'] = 'application/json'
+            resp.headers['Content-Length'] = len(response_data)
+            resp.headers['Connection'] = 'close'
+            return resp
         
     except Exception as e:
         print(f"Error analyzing device recording: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/analyses', methods=['GET'])
+def get_user_analyses():
+    """
+    Get all analyses for the authenticated user.
+    Requires Authorization header with Supabase JWT token.
+    
+    Query params:
+    - limit: max number of results (default 50)
+    """
+    try:
+        # Get user ID from auth token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization header required'}), 401
+        
+        token = auth_header.replace('Bearer ', '')
+        
+        # Verify token and get user
+        from auth.auth_utils import get_user_from_token
+        user = get_user_from_token(token)
+        if not user:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+        
+        user_id = user.id
+        limit = request.args.get('limit', 50, type=int)
+        
+        # Get analyses from database
+        analyses = AnalysisRepository.get_by_user(user_id, limit=limit)
+        
+        # Convert to JSON-serializable format
+        result = []
+        for a in analyses:
+            result.append({
+                'id': a.id,
+                'recording_id': a.recording_id,
+                'sheet_music_id': a.sheet_music_id,
+                'score': a.score,
+                'strength': a.strength,
+                'improvement': a.improvement,
+                'full_feedback': a.full_feedback,
+                'recording_title': a.recording_title,
+                'sheet_music_title': a.sheet_music_title,
+                'created_at': a.created_at.isoformat() if a.created_at else None
+            })
+        
+        return jsonify({'analyses': result})
+        
+    except Exception as e:
+        print(f"Error fetching analyses: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/analyses/<analysis_id>', methods=['GET'])
+def get_analysis_by_id(analysis_id):
+    """
+    Get a specific analysis by ID.
+    Requires Authorization header with Supabase JWT token.
+    """
+    try:
+        # Get user ID from auth token
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization header required'}), 401
+        
+        token = auth_header.replace('Bearer ', '')
+        
+        # Verify token and get user
+        from auth.auth_utils import get_user_from_token
+        user = get_user_from_token(token)
+        if not user:
+            return jsonify({'error': 'Invalid or expired token'}), 401
+        
+        user_id = user.id
+        
+        # Get analysis from database
+        analysis = AnalysisRepository.get_by_id(analysis_id)
+        
+        if not analysis:
+            return jsonify({'error': 'Analysis not found'}), 404
+        
+        # Verify user owns this analysis
+        if analysis.user_id != user_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        return jsonify({
+            'id': analysis.id,
+            'recording_id': analysis.recording_id,
+            'sheet_music_id': analysis.sheet_music_id,
+            'score': analysis.score,
+            'strength': analysis.strength,
+            'improvement': analysis.improvement,
+            'full_feedback': analysis.full_feedback,
+            'recording_title': analysis.recording_title,
+            'sheet_music_title': analysis.sheet_music_title,
+            'created_at': analysis.created_at.isoformat() if analysis.created_at else None
+        })
+        
+    except Exception as e:
+        print(f"Error fetching analysis: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -962,37 +1178,57 @@ def analyze_with_audio():
         print("Uploading audio to Gemini...")
         audio_file = genai.upload_file(audio_path, mime_type='audio/wav')
         
-        # Prepare the analysis prompt
-        prompt = f"""You are an expert music teacher analyzing a student's performance.
+        # Prepare the analysis prompt - generates context for voice AI conversation
+        prompt = f"""You are an expert music teacher with perfect pitch. Analyze this student's audio recording and compare it EXACTLY against the sheet music.
 
-## Sheet Music Reference
-The student is attempting to play: "{sheet_music_title}"
+## Reference Sheet Music
+**Piece:** "{sheet_music_title}"
 
-Here is the MusicXML/reference data for the piece:
+**MusicXML Score (contains every note the student SHOULD play):**
 ```xml
-{audiveris_raw_output[:10000] if audiveris_raw_output else 'No reference data available'}
+{audiveris_raw_output[:15000] if audiveris_raw_output else 'No reference data available'}
 ```
 
-## Task
-Listen to the attached audio recording of the student's performance and provide constructive feedback.
+## YOUR TASK
 
-## Instructions
-1. Compare what you hear in the audio to what the sheet music indicates should be played
-2. Identify any:
-   - Wrong notes or missed notes
-   - Rhythm/timing issues
-   - Tempo inconsistencies
-   - Dynamic expression issues
-   - Areas that were played well
+Listen to the audio recording carefully. Compare what you HEAR vs what the sheet music SHOWS.
 
-3. Provide feedback in this structure:
-   - **Overall Impression**: A brief encouraging summary (1-2 sentences)
-   - **What You Did Well**: Specific positive observations
-   - **Areas for Improvement**: Specific constructive feedback with suggestions
-   - **Practice Tips**: 2-3 actionable tips for improvement
+Generate a conversational analysis that will be spoken aloud to the student. The student will then be able to ask you follow-up questions about their performance.
 
-Be encouraging and supportive while being specific about areas for improvement.
-Keep feedback concise but helpful (aim for 200-300 words total).
+## REQUIREMENTS
+
+1. **Start with a warm greeting** - Address the student directly (use "you")
+
+2. **Give an overall impression** - How did the piece sound overall? (1-2 sentences)
+
+3. **List SPECIFIC pitch errors** - Be extremely specific:
+   - "In measure 2, beat 1, you played F natural instead of F sharp - you missed the sharp"
+   - "In measure 5, you played a B when it should have been C"
+   - "Your E notes in measures 3 through 4 were consistently a bit flat"
+
+4. **List SPECIFIC duration/rhythm issues**:
+   - "In measure 3, you cut the half note D short - only held it for about 1 beat instead of 2"
+   - "You rushed through the eighth notes in measure 10"
+
+5. **Highlight what they did WELL** - Be specific and encouraging
+
+6. **Give the TOP 3 priorities to fix** - Ranked by importance
+
+7. **End with encouragement** and mention you're happy to discuss any specific measure or passage
+
+8. **Give a score out of 10**
+
+## OUTPUT FORMAT
+
+Write your response as if you're speaking directly to the student. This will be spoken aloud by a voice AI, so:
+- Use natural, conversational language
+- Don't use markdown formatting or bullet points
+- Organize thoughts clearly but conversationally  
+- Keep it under 400 words so it's not too long to listen to
+
+Example tone: "Hey! I just listened to your performance of {sheet_music_title}. Overall, nice work! I noticed a few things though. In measure 2, you played an F natural when it should have been F sharp - easy to miss that accidental. Also in measure 5..."
+
+End with: "Feel free to ask me about any specific measure or if you want tips on how to practice a tricky section!"
 """
         
         print("Generating analysis with Gemini...")
@@ -1060,6 +1296,123 @@ def process_musicxml():
         })
         
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/voice/wake-word', methods=['POST'])
+def detect_wake_word():
+    """
+    Detect wake word "Hey Tuya" in audio using Whisper
+    Returns: {"detected": true/false, "transcribed_text": "..."}
+    """
+    try:
+        if not request.data:
+            return jsonify({'error': 'No audio data provided'}), 400
+
+        # Save audio to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+            tmp_file.write(request.data)
+            tmp_path = tmp_file.name
+
+        try:
+            # Transcribe with Whisper
+            model = get_whisper_model()
+            result = model.transcribe(tmp_path, language="en")
+            transcribed_text = result["text"].strip().lower()
+            
+            # Check for wake word (flexible matching)
+            wake_word_lower = WAKE_WORD.lower()
+            detected = wake_word_lower in transcribed_text or \
+                      "hey tuya" in transcribed_text or \
+                      "hey toya" in transcribed_text
+            
+            print(f"Wake word check - Transcribed: '{transcribed_text}' -> Detected: {detected}")
+            
+            return jsonify({
+                'detected': detected,
+                'transcribed_text': transcribed_text
+            })
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+
+    except Exception as e:
+        print(f"Wake word detection error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'detected': False}), 500
+
+
+@app.route('/api/voice/chat', methods=['POST'])
+def voice_chat():
+    """
+    Process voice input, transcribe, get AI response
+    Returns: {"user_text": "...", "assistant_text": "..."}
+    """
+    try:
+        if not request.data:
+            return jsonify({'error': 'No audio data provided'}), 400
+
+        # Save audio to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+            tmp_file.write(request.data)
+            tmp_path = tmp_file.name
+
+        try:
+            # Transcribe with Whisper
+            model = get_whisper_model()
+            result = model.transcribe(tmp_path, language="en")
+            user_text = result["text"].strip()
+            
+            print(f"User said: '{user_text}'")
+            
+            # Remove wake word if present
+            user_text_clean = user_text.replace(WAKE_WORD.lower(), "").replace("hey tuya", "").strip()
+            if not user_text_clean:
+                user_text_clean = user_text
+            
+            # Get AI response
+            assistant_text = ai_coach.chat(user_text_clean)
+            
+            print(f"Assistant: '{assistant_text}'")
+            
+            # Generate TTS audio using gTTS (Google Text-to-Speech - free)
+            tts_audio_data = None
+            try:
+                tts = gTTS(text=assistant_text[:500], lang='en', slow=False)  # Limit to 500 chars
+                audio_buffer = io.BytesIO()
+                tts.write_to_fp(audio_buffer)
+                tts_audio_data = audio_buffer.getvalue()
+                print(f"Generated TTS audio: {len(tts_audio_data)} bytes")
+            except Exception as e:
+                print(f"TTS generation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                tts_audio_data = None
+            
+            # Return response with TTS audio as base64 if available
+            result = {
+                'user_text': user_text_clean,
+                'assistant_text': assistant_text
+            }
+            
+            if tts_audio_data:
+                result['tts_audio'] = base64.b64encode(tts_audio_data).decode('utf-8')
+                result['tts_format'] = 'mp3'  # gTTS returns MP3
+            
+            return jsonify(result)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+
+    except Exception as e:
+        print(f"Voice chat error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 

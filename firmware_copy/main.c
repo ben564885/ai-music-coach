@@ -55,7 +55,7 @@
 // network Connect your computer to the Hackathon network, then find its IP
 // (e.g., 10.0.0.x) and update this value. The device and computer must be on
 // the same network.
-#define CLOUD_BACKEND_HOST "10.0.0.197"
+#define CLOUD_BACKEND_HOST "192.168.34.95"
 #define CLOUD_BACKEND_PORT 5001
 #define CLOUD_BACKEND_PATH "/api/firmware/upload"
 
@@ -249,8 +249,8 @@ typedef struct {
 } recorder_mgr_t;
 
 // Hardcoded credentials for development
-#define USER_SSID "Hackathon"
-#define USER_PASSWORD "Adobe2000"
+#define USER_SSID "JJ Lake"
+#define USER_PASSWORD "20220315"
 
 static recorder_mgr_t g_recorder;
 static BOOL_T g_net_connected = FALSE;
@@ -1210,6 +1210,8 @@ static void fetch_uploads(void) {
           if (count > MAX_UPLOADS)
             count = MAX_UPLOADS;
 
+          PR_NOTICE("Found sheet_music array with %d items (max %d)", json_array_count, MAX_UPLOADS);
+
           for (int i = 0; i < count; i++) {
             cJSON *upload = cJSON_GetArrayItem(uploads, i);
             if (upload) {
@@ -1220,6 +1222,18 @@ static void fetch_uploads(void) {
               cJSON *ref_data = cJSON_GetObjectItem(upload, "reference_data");
               cJSON *audiveris =
                   cJSON_GetObjectItem(upload, "audiveris_raw_output");
+
+              // Debug logging
+              PR_NOTICE("Upload[%d]: id=%p (type=%d), title=%p (type=%d)", 
+                       i, id, id ? id->type : -1, title, title ? title->type : -1);
+              if (id) {
+                const char *id_str = cJSON_GetStringValue(id);
+                PR_NOTICE("  id string: %s", id_str ? id_str : "NULL");
+              }
+              if (title) {
+                const char *title_str = cJSON_GetStringValue(title);
+                PR_NOTICE("  title string: %s", title_str ? title_str : "NULL");
+              }
 
               if (id && title) {
               strncpy(g_recorder.uploads[i].id,
@@ -1289,10 +1303,16 @@ static void fetch_uploads(void) {
                           sizeof(g_recorder.uploads[i].key_signature) - 1);
                 }
 
-                // Parse note count
-                cJSON *notes = cJSON_GetObjectItem(ref_data, "notes");
-                if (notes && cJSON_IsArray(notes)) {
-                  g_recorder.uploads[i].note_count = cJSON_GetArraySize(notes);
+                // Parse note count - try direct note_count field first (lite response),
+                // then fall back to counting notes array (full response)
+                cJSON *note_count_field = cJSON_GetObjectItem(ref_data, "note_count");
+                if (note_count_field && cJSON_IsNumber(note_count_field)) {
+                  g_recorder.uploads[i].note_count = (int)cJSON_GetNumberValue(note_count_field);
+                } else {
+                  cJSON *notes = cJSON_GetObjectItem(ref_data, "notes");
+                  if (notes && cJSON_IsArray(notes)) {
+                    g_recorder.uploads[i].note_count = cJSON_GetArraySize(notes);
+                  }
                 }
 
                 // Parse clef
@@ -1304,8 +1324,12 @@ static void fetch_uploads(void) {
                 }
               }
 
-              // Check if analyzed
-              if (audiveris && cJSON_IsString(audiveris) &&
+              // Check if analyzed - try has_analysis bool first (lite response),
+              // then fall back to audiveris_raw_output string (full response)
+              cJSON *has_analysis_field = cJSON_GetObjectItem(upload, "has_analysis");
+              if (has_analysis_field && cJSON_IsBool(has_analysis_field)) {
+                g_recorder.uploads[i].has_analysis = cJSON_IsTrue(has_analysis_field) ? TRUE : FALSE;
+              } else if (audiveris && cJSON_IsString(audiveris) &&
                   cJSON_GetStringValue(audiveris) &&
                   strlen(cJSON_GetStringValue(audiveris)) > 0) {
                 g_recorder.uploads[i].has_analysis = TRUE;
