@@ -14,6 +14,7 @@ import 'package:mobile_app_flutter/widgets/sheet_music_library.dart';
 import 'package:mobile_app_flutter/widgets/stat_card.dart';
 import 'package:mobile_app_flutter/repositories/stats_repository.dart';
 import 'package:mobile_app_flutter/utils/app_localizations.dart';
+import 'package:tuya_home_sdk_flutter/tuya_home_sdk_flutter.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -27,6 +28,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _activeTab = 'sessions'; // 'sessions' or 'uploads'
   final PageController _pageController = PageController();
   int _refreshKey = 0;
+  bool _isTuyaRecording = false;
 
   @override
   void dispose() {
@@ -118,71 +120,134 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildDashboard(User? user) {
-    final l10n = AppLocalizations.of(context);
+  Future<void> _toggleRemoteSession(BuildContext context) async {
+    final user = context.read<AuthBloc>().state.user;
     final metadata = user?.userMetadata ?? {};
-    final displayName = metadata['full_name'] ?? metadata['name'] ?? l10n.translate('musician');
+    final prefs = metadata['preferences'] as Map<String, dynamic>? ?? {};
+    final devices = prefs['known_devices'] as List? ?? [];
+    
+    if (devices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No device paired! Go to Settings -> Devices.')),
+      );
+      return;
+    }
 
+    // Use first device for now
+    final devId = devices.first['id'] as String;
+    final newState = !_isTuyaRecording;
+    
+    try {
+        await TuyaHomeSdkFlutter.instance.publishDps(
+          deviceId: devId,
+          dps: {"101": newState},
+        );
+        setState(() {
+          _isTuyaRecording = newState;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(newState ? 'Session Started on Device!' : 'Session Stopped!')),
+        );
+    } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to toggle session: $e')),
+        );
+    }
+  }
+
+  Widget _buildDashboard(User? user) {
+    final l10n = AppLocalizations.of(context)!;
+    final displayName = user?.userMetadata?['full_name'] ?? user?.email?.split('@').first ?? 'Musician';
+    final avatarUrl = user?.userMetadata?['avatar_url'];
+    
     return Container(
-      decoration: const BoxDecoration(
-        gradient: AppTheme.backgroundGradient,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            AppTheme.primaryColor.withOpacity(0.05),
+            Colors.white,
+          ],
+        ),
       ),
       child: CustomScrollView(
         slivers: [
-          // Modern Header
-          SliverAppBar(
-            floating: false,
-            pinned: true,
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            title: Text(
-              '${l10n.translate('greeting')}, ${displayName.split(' ')[0]}!',
-              style: AppTheme.textTheme.displaySmall,
-            ),
-            actions: [
-              GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const ProfileScreen()),
-                  );
-                },
-                child: Container(
-                  margin: const EdgeInsets.only(right: 16),
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    gradient: AppTheme.primaryGradient,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Colors.white,
-                      width: 1.5,
+          // Header with Profile
+          SliverToBoxAdapter(
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.all(AppTheme.spacingM),
+                child: Row(
+                  children: [
+                    // Profile Picture
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                      ),
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: AppTheme.primaryGradient,
+                          boxShadow: AppTheme.glowShadow,
+                        ),
+                        child: avatarUrl != null
+                            ? ClipOval(
+                                child: Image.network(
+                                  avatarUrl,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const Icon(
+                                    Icons.person,
+                                    color: Colors.white,
+                                    size: 28,
+                                  ),
+                                ),
+                              )
+                            : const Icon(
+                                Icons.person,
+                                color: Colors.white,
+                                size: 28,
+                              ),
+                      ),
                     ),
-                    boxShadow: AppTheme.glowShadow,
-                    image: user?.userMetadata?['avatar_url'] != null
-                        ? DecorationImage(
-                            image: NetworkImage(user!.userMetadata?['avatar_url']),
-                            fit: BoxFit.cover,
-                          )
-                        : null,
-                  ),
-                  child: user?.userMetadata?['avatar_url'] == null
-                      ? Center(
-                          child: Text(
-                            user?.email?.isNotEmpty == true 
-                                ? user!.email![0].toUpperCase() 
-                                : 'U',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
+                    const SizedBox(width: AppTheme.spacingM),
+                    // Greeting
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            l10n.translate('welcome_back') ?? 'Welcome back,',
+                            style: AppTheme.textTheme.bodyMedium?.copyWith(
+                              color: Colors.white60,
                             ),
                           ),
-                        )
-                      : null,
+                          Text(
+                            displayName,
+                            style: AppTheme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Settings icon
+                    IconButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                      ),
+                      icon: const Icon(Icons.settings_outlined),
+                    ),
+                  ],
                 ),
               ),
-            ],
+            ),
           ),
 
           // Stats Cards Row
@@ -253,7 +318,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           
           // Bottom padding
-          const SliverToBoxAdapter(child: SizedBox(height: 80)),
+          const SliverToBoxAdapter(child: SizedBox(height: 100)),
         ],
       ),
     );
@@ -368,6 +433,41 @@ class _HomeScreenState extends State<HomeScreen> {
                       });
                     },
                   ),
+                  
+                  // Separator for Remote Session
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: AppTheme.spacingM, horizontal: AppTheme.spacingL),
+                    child: Row(
+                      children: [
+                        const Expanded(child: Divider(color: Colors.white10)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacingM),
+                          child: Text(
+                            "OR",
+                            style: AppTheme.textTheme.bodySmall?.copyWith(
+                              color: Colors.white24,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                        ),
+                        const Expanded(child: Divider(color: Colors.white10)),
+                      ],
+                    ),
+                  ),
+                  
+                  _buildActionTile(
+                    context,
+                    icon: _isTuyaRecording ? Icons.stop_circle_outlined : Icons.play_circle_outline,
+                    title: _isTuyaRecording ? "Stop Remote Session" : "Start Remote Session",
+                    subtitle: _isTuyaRecording ? "Click to stop recording on device" : "Click to start recording on device",
+                    color: _isTuyaRecording ? AppTheme.errorColor : AppTheme.successColor,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _toggleRemoteSession(context);
+                    },
+                  ),
+                  const SizedBox(height: AppTheme.spacingS),
                 ],
               ),
             ),

@@ -94,8 +94,140 @@ PODS:
     - Flutter
     - FlutterMacOS
   - SwiftyGif (5.4.5)
+  - ThingBluetooth (5.6.1):
+    - ThingSmartUtil (~> 5.13)
+  - ThingMachRegister (0.8.0)
+  - ThingMbedtls (3.5.2)
+  - ThingOpenSSLSDK (1.1.1-w.4)
+  - ThingSmartActivatorCoreKit (5.9.0):
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartDeviceCoreKit (~> 5.0)
+    - ThingSmartPairingCoreKit (~> 5.3)
+    - ThingSmartSocketChannelKit (~> 5.0)
+    - ThingSmartUtil (~> 5.14)
+  - ThingSmartActivatorKit (5.60.3):
+    - ThingSmartActivatorCoreKit (~> 5.2)
+    - ThingSmartDeviceKit (~> 5.0)
+    - YYModel
+  - ThingSmartBaseBLEKit (1.0.0):
+    - ThingSmartUtil (~> 5.12)
+  - ThingSmartBaseKit (5.8.3):
+    - ThingSmartMQTTChannelKit (~> 5.0)
+    - ThingSmartNetworkKit (~> 5.0)
+    - ThingSmartUtil (~> 5.0)
+    - YYModel
+  - ThingSmartBeaconKit (5.4.3):
+    - ThingSmartBaseBLEKit (~> 1.0)
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartBLECoreKit (~> 5.0)
+    - ThingSmartDeviceCoreKit (~> 5.14)
+    - ThingSmartUtil (~> 5.14)
+  - ThingSmartBLECoreKit (5.13.0.3):
+    - ThingBluetooth (< 10.0, ~> 5.5)
+    - ThingSmartBaseBLEKit (~> 1.0)
+    - ThingSmartUtil (~> 5.16)
+    - YYModel
+  - ThingSmartBLEKit (5.14.2):
+    - ThingBluetooth (< 10.0, ~> 5.6)
+    - ThingSmartBaseBLEKit (~> 1.0)
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartBeaconKit (~> 5.0)
+    - ThingSmartBLECoreKit (~> 5.13)
+    - ThingSmartDeviceCoreKit (~> 5.15)
+    - ThingSmartUtil (~> 5.17)
+  - ThingSmartBLEMeshKit (5.13.2):
+    - ThingBluetooth (< 10.0, ~> 5.4)
+    - ThingSmartActivatorCoreKit (~> 5.0)
+    - ThingSmartBaseBLEKit (~> 1.0)
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartDeviceCoreKit (~> 5.14)
+    - ThingSmartUtil (~> 5.14)
+  - ThingSmartCryption (5.0.0)
+  - ThingSmartDeviceCoreKit (5.21.7):
+    - ThingSmartMQTTChannelKit (~> 5.8)
+    - ThingSmartNetworkKit (~> 5.0)
+    - ThingSmartSocketChannelKit (~> 5.0)
+    - ThingSmartUtil (~> 5.15)
+    - YYModel
+  - ThingSmartDeviceKit (5.12.1.2):
+    - ThingMachRegister
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartDeviceCoreKit (~> 5.20)
+    - ThingSmartMQTTChannelKit (~> 5.5)
+    - ThingSmartNetworkKit (>= 5.7.10)
+    - ThingSmartShareKit (~> 5.0)
+    - YYModel
+  - ThingSmartFeedbackKit (5.0.0):
+    - ThingSmartBaseKit (~> 5.0)
+    - YYModel
+  - ThingSmartHomeKit (6.7.0.4):
+    - ThingBluetooth (= 5.6.1)
+    - ThingMachRegister (= 0.8.0)
+    - ThingMbedtls (= 3.5.2)
+    - ThingOpenSSLSDK (~> 1.1.1-w.4)
+    - ThingSmartActivatorCoreKit (= 5.9.0)
+    - ThingSmartActivatorKit (= 5.60.3)
+    - ThingSmartBaseBLEKit (= 1.0.0)
+    - ThingSmartBaseKit (= 5.8.3)
+    - ThingSmartBeaconKit (= 5.4.3)
+    - ThingSmartBLECoreKit (= 5.13.0.3)
+    - ThingSmartBLEKit (= 5.14.2)
+    - ThingSmartBLEMeshKit (= 5.13.2)
+    - ThingSmartCryption
+    - ThingSmartDeviceCoreKit (= 5.21.7)
+    - ThingSmartDeviceKit (= 5.12.1.2)
+    - ThingSmartFeedbackKit (= 5.0.0)
+    - ThingSmartMessageKit (= 5.6.1)
+    - ThingSmartMQTTChannelKit (= 5.8.0)
+    - ThingSmartNetworkKit (= 5.8.0.1)
+    - ThingSmartPairingCoreKit (= 5.6.1.1)
+    - ThingSmartSceneCoreKit (= 5.17.1)
+    - ThingSmartSceneKit (= 4.0.0)
+    - ThingSmartShareKit (= 5.4.0)
+    - ThingSmartSocketChannelKit (= 5.0.11)
+    - ThingSmartTimerKit (= 5.0.0)
+    - ThingSmartUtil (= 5.17.1.3)
+    - YYModel
+  - ThingSmartMessageKit (5.6.1):
+    - ThingSmartBaseKit
+    - YYModel
+  - ThingSmartMQTTChannelKit (5.8.0):
+    - ThingSmartUtil (>= 5.0.0)
+  - ThingSmartNetworkKit (5.8.0.1):
+    - ThingSmartUtil (>= 5.8)
+    - YYModel
+  - ThingSmartPairingCoreKit (5.6.1.1):
+    - ThingSmartMQTTChannelKit (>= 5.0.0)
+    - ThingSmartSocketChannelKit (>= 5.0.0)
+    - ThingSmartUtil (>= 5.16.0)
+    - YYModel
+  - ThingSmartSceneCoreKit (5.17.1):
+    - ThingSmartBaseKit
+    - ThingSmartDeviceCoreKit
+    - ThingSmartNetworkKit (>= 5.7.10)
+    - YYModel
+  - ThingSmartSceneKit (4.0.0):
+    - ThingSmartBaseKit
+    - ThingSmartDeviceKit
+    - ThingSmartSceneCoreKit
+  - ThingSmartShareKit (5.4.0):
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartDeviceCoreKit (~> 5.0)
+  - ThingSmartSocketChannelKit (5.0.11):
+    - ThingSmartUtil (>= 5.0.0)
+  - ThingSmartTimerKit (5.0.0):
+    - ThingSmartBaseKit (~> 5.0)
+    - ThingSmartDeviceCoreKit (~> 5.0)
+    - YYModel
+  - ThingSmartUtil (5.17.1.3):
+    - ThingMbedtls (= 3.5.2)
+    - ThingOpenSSLSDK (~> 1.1.1-t.0)
+  - tuya_home_sdk_flutter (0.0.2):
+    - Flutter
+    - ThingSmartHomeKit (~> 6.7.0)
   - url_launcher_ios (0.0.1):
     - Flutter
+  - YYModel (1.0.4)
 
 DEPENDENCIES:
   - app_links (from `.symlinks/plugins/app_links/ios`)
@@ -108,9 +240,38 @@ DEPENDENCIES:
   - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
+  - ThingSmartCryption (from `./`)
+  - tuya_home_sdk_flutter (from `.symlinks/plugins/tuya_home_sdk_flutter/ios`)
   - url_launcher_ios (from `.symlinks/plugins/url_launcher_ios/ios`)
 
 SPEC REPOS:
+  https://github.com/tuya/tuya-pod-specs.git:
+    - ThingBluetooth
+    - ThingMachRegister
+    - ThingMbedtls
+    - ThingOpenSSLSDK
+    - ThingSmartActivatorCoreKit
+    - ThingSmartActivatorKit
+    - ThingSmartBaseBLEKit
+    - ThingSmartBaseKit
+    - ThingSmartBeaconKit
+    - ThingSmartBLECoreKit
+    - ThingSmartBLEKit
+    - ThingSmartBLEMeshKit
+    - ThingSmartDeviceCoreKit
+    - ThingSmartDeviceKit
+    - ThingSmartFeedbackKit
+    - ThingSmartHomeKit
+    - ThingSmartMessageKit
+    - ThingSmartMQTTChannelKit
+    - ThingSmartNetworkKit
+    - ThingSmartPairingCoreKit
+    - ThingSmartSceneCoreKit
+    - ThingSmartSceneKit
+    - ThingSmartShareKit
+    - ThingSmartSocketChannelKit
+    - ThingSmartTimerKit
+    - ThingSmartUtil
   trunk:
     - AppAuth
     - AppCheckCore
@@ -123,6 +284,7 @@ SPEC REPOS:
     - PromisesObjC
     - SDWebImage
     - SwiftyGif
+    - YYModel
 
 EXTERNAL SOURCES:
   app_links:
@@ -145,6 +307,10 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
   shared_preferences_foundation:
     :path: ".symlinks/plugins/shared_preferences_foundation/darwin"
+  ThingSmartCryption:
+    :path: "./"
+  tuya_home_sdk_flutter:
+    :path: ".symlinks/plugins/tuya_home_sdk_flutter/ios"
   url_launcher_ios:
     :path: ".symlinks/plugins/url_launcher_ios/ios"
 
@@ -170,8 +336,37 @@ SPEC CHECKSUMS:
   SDWebImage: e9c98383c7572d713c1a0d7dd2783b10599b9838
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
   SwiftyGif: 706c60cf65fa2bc5ee0313beece843c8eb8194d4
+  ThingBluetooth: 3edb8956c3cb4c373fbfcb99aa0f14141118c974
+  ThingMachRegister: 44c6eb53032ebfdeeaa1b610071e2cc8b5bfa0ff
+  ThingMbedtls: 52721dc4ab458c5bcd4e2d679fc08d1bb716f3a0
+  ThingOpenSSLSDK: 838c9c839f77cad49e23fa007221794965325459
+  ThingSmartActivatorCoreKit: 4420040a0f93df3eb3af933249ff294c5c9fd874
+  ThingSmartActivatorKit: 9c09d6e04c0306d5c7c4be5ed6457beb7b4385ad
+  ThingSmartBaseBLEKit: ce4744d0ef3f4327b8c6c1f101a5836b804b7484
+  ThingSmartBaseKit: 3c3067db790621a4d78b9068538686a1149ecb5f
+  ThingSmartBeaconKit: d5507eea8d118a8ef96abcbd79816c207dffdf41
+  ThingSmartBLECoreKit: f5f24dc8c32d1b2deaa7376557087e10b8312f6e
+  ThingSmartBLEKit: 818947ddf4b52cced4bf6cad0f95028412a0187b
+  ThingSmartBLEMeshKit: 590373c8354b4486a7109bdf978093fd8df449b9
+  ThingSmartCryption: 0ea543e9e608538da633e0be73821990e2ef2036
+  ThingSmartDeviceCoreKit: 2afd8087cb5b2b00aa20c432ae681d3386a7afe7
+  ThingSmartDeviceKit: 37687205c70ebf6078e7a6e45afbfe36fab6fa5c
+  ThingSmartFeedbackKit: 9cdd6d748f06b20fec1076eedae5dc07c3c2e8d0
+  ThingSmartHomeKit: 03dc4bd8127037cf2ee30b5b477779d6789c4d66
+  ThingSmartMessageKit: 99ab3d31eb4ef53c5d2dfdc078e509eb16e3a101
+  ThingSmartMQTTChannelKit: 455a72a50f0d74bf0bc9e5ec70d47e59dc915308
+  ThingSmartNetworkKit: ce1cf875e3313fdc074fe414efbb580eb9ebc24e
+  ThingSmartPairingCoreKit: 7e018e6411e55631ff24350cc65692d30d7f2210
+  ThingSmartSceneCoreKit: 1234e4ecb72aecb254fb907f9280e71bc0676160
+  ThingSmartSceneKit: d738bbf17790e3b4e087cb820f66dfcd5d7aa551
+  ThingSmartShareKit: 5d97cf5e650ba28484c114c871e292a53aa7030f
+  ThingSmartSocketChannelKit: 3251b177c2cb6bb4ec51754ea7e21f2c302ab0da
+  ThingSmartTimerKit: 092435bef111dc7f2086e015643641e7e984bdcd
+  ThingSmartUtil: 4d6438fdb86b6dd7af3369ed52a250ccfbbe4abd
+  tuya_home_sdk_flutter: fe8406164424c5e7eacf16d3dd5834f1e4523e7b
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
+  YYModel: 2a7fdd96aaa4b86a824e26d0c517de8928c04b30
 
-PODFILE CHECKSUM: 3c63482e143d1b91d2d2560aee9fb04ecc74ac7e
+PODFILE CHECKSUM: 924d368ef443d3f6429c704866b73ee4cf801c5d
 
 COCOAPODS: 1.16.2

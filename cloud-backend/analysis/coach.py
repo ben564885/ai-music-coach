@@ -9,6 +9,7 @@ import sys
 import subprocess
 import tempfile
 import shutil
+import requests
 from pathlib import Path
 import google.generativeai as genai
 from soundslice_automation import upload_sheet_music
@@ -939,6 +940,88 @@ CRITICAL: Return ONLY valid JSON. Verify your reasoning against the visual evide
             # print(f"DEBUG: Failed text was: {text}") # Uncomment if deep debugging needed
             return None
     
+    def analyze_performance_with_audio(self, audio_url, reference_data):
+        """
+        Analyze a recorded performance against sheet music using Gemini.
+        
+        Args:
+            audio_url: URL to the recorded audio file
+            reference_data: MusicXML string or parsed reference data from sheet music
+            
+        Returns:
+            String containing AI-generated feedback
+        """
+        if not self.model:
+            return "AI analysis not available - Gemini API key not configured."
+        
+        import requests
+        import tempfile
+        import os
+        
+        try:
+            # Download the audio file
+            print(f"DEBUG: Downloading audio from {audio_url}")
+            response = requests.get(audio_url, timeout=30)
+            response.raise_for_status()
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                temp_audio.write(response.content)
+                temp_audio_path = temp_audio.name
+            
+            try:
+                # Upload audio file to Gemini
+                audio_file = genai.upload_file(temp_audio_path, mime_type='audio/wav')
+                
+                # Prepare the prompt
+                if isinstance(reference_data, str):
+                    # It's MusicXML string
+                    sheet_info = f"Reference sheet music (MusicXML):\n{reference_data[:2000]}..."
+                else:
+                    # It's a dict
+                    sheet_info = f"Reference sheet music:\n{json.dumps(reference_data, indent=2)[:2000]}..."
+                
+                prompt = f"""You are an expert music coach analyzing a student's performance.
+
+I'm providing you with:
+1. An audio recording of the student playing
+2. The reference sheet music they were supposed to play
+
+{sheet_info}
+
+Please analyze the performance and provide feedback:
+
+1. **Overall Assessment** (1-2 sentences): How well did they follow the sheet music?
+
+2. **What went well** (2-3 bullet points): Positive aspects of the performance
+
+3. **Areas to improve** (2-3 bullet points): Specific things to work on
+
+4. **Practice suggestions** (1-2 actionable tips)
+
+Keep your response concise (under 200 words) and encouraging. Focus on the most important feedback.
+"""
+                
+                # Generate analysis
+                response = self.model.generate_content([audio_file, prompt])
+                feedback = response.text
+                
+                return feedback
+                
+            finally:
+                # Clean up temp file
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
+                    
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading audio: {e}")
+            return f"Could not download audio file: {str(e)}"
+        except Exception as e:
+            print(f"Error in analyze_performance_with_audio: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Analysis error: {str(e)}"
+
     def generate_feedback(self, mistakes, reference_data, metadata):
         """
         Generate coaching feedback based on detected mistakes

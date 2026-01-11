@@ -274,7 +274,7 @@ class _ImageViewerScreen extends StatelessWidget {
     
     // Otherwise, construct URL to fetch from backend
     // The backend stores local paths like "uploads/image_picker_..." or just "image_picker_..."
-    final backendUrl = 'http://10.0.0.146:5001'; // Match the URL from sheet_music_process_screen.dart
+    final backendUrl = 'http://192.168.34.176:5001'; // Match the URL from sheet_music_process_screen.dart
     
     // Extract filename - handle both "uploads/filename.jpg" and "filename.jpg"
     String fileName = imageUrl;

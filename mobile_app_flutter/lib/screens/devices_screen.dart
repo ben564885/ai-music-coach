@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mobile_app_flutter/utils/app_theme.dart';
 import 'package:mobile_app_flutter/widgets/gradient_card.dart';
 import 'package:mobile_app_flutter/blocs/auth/auth_bloc.dart';
-import 'package:mobile_app_flutter/screens/scan_screen.dart';
+import 'package:mobile_app_flutter/screens/tuya_scan_screen.dart';
+import 'package:mobile_app_flutter/screens/manual_device_link_screen.dart';
+import 'package:mobile_app_flutter/repositories/device_repository.dart';
 import 'package:intl/intl.dart';
 
 class DevicesScreen extends StatefulWidget {
@@ -15,66 +16,269 @@ class DevicesScreen extends StatefulWidget {
 }
 
 class _DevicesScreenState extends State<DevicesScreen> {
-  final _supabase = Supabase.instance.client;
-  List<Map<String, dynamic>> _knownDevices = [];
+  final _deviceRepo = DeviceRepository();
+  List<Device> _devices = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _loadKnownDevices();
+    _loadDevices();
   }
 
-  void _loadKnownDevices() {
-    final user = _supabase.auth.currentUser;
-    final metadata = user?.userMetadata ?? {};
-    final prefs = metadata['preferences'] as Map<String, dynamic>? ?? {};
-    final devices = prefs['known_devices'] as List? ?? [];
+  Future<void> _loadDevices() async {
+    setState(() => _isLoading = true);
     
-    setState(() {
-      _knownDevices = List<Map<String, dynamic>>.from(devices);
-      // Sort by last connected date descending
-      _knownDevices.sort((a, b) {
-        final dateA = DateTime.parse(a['lastConnected'] ?? DateTime.now().toIso8601String());
-        final dateB = DateTime.parse(b['lastConnected'] ?? DateTime.now().toIso8601String());
-        return dateB.compareTo(dateA);
-      });
-    });
+    try {
+      final devices = await _deviceRepo.getDevices();
+      if (mounted) {
+        setState(() {
+          _devices = devices;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading devices: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _removeDevice(int index) async {
-    final deviceToRemove = _knownDevices[index];
+    final deviceToRemove = _devices[index];
+    
+    // Optimistically remove from UI
     setState(() {
-      _knownDevices.removeAt(index);
+      _devices.removeAt(index);
     });
 
     try {
-      final user = _supabase.auth.currentUser;
-      if (user == null) return;
-
-      final currentMetadata = user.userMetadata ?? {};
-      final currentPrefs = Map<String, dynamic>.from(currentMetadata['preferences'] as Map? ?? {});
-      currentPrefs['known_devices'] = _knownDevices;
-
-      await _supabase.auth.updateUser(
-        UserAttributes(
-          data: {
-            ...currentMetadata,
-            'preferences': currentPrefs,
-          },
-        ),
-      );
-
-      if (mounted) {
-        context.read<AuthBloc>().add(const AuthUserMetadataUpdated());
+      final success = await _deviceRepo.unlinkDevice(deviceToRemove.deviceId);
+      
+      if (!success && mounted) {
+        // Restore if failed
+        _loadDevices();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Error removing device')),
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Device unlinked')),
+        );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error removing device: $e')),
         );
-        _loadKnownDevices(); // Reload to restore state
+        _loadDevices(); // Reload to restore state
       }
     }
+  }
+
+  void _showAddDeviceOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Add Device',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Choose how to add your PracticePod',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Colors.white54,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            
+            // Option 1: Manual Link (Recommended)
+            _buildOptionCard(
+              icon: Icons.edit,
+              title: 'Enter Device ID',
+              subtitle: 'Type the ID shown on your device',
+              recommended: true,
+              onTap: () async {
+                Navigator.pop(context);
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const ManualDeviceLinkScreen()),
+                );
+                if (result == true) {
+                  _loadDevices();
+                }
+              },
+            ),
+            
+            const SizedBox(height: 12),
+            
+            // Option 2: BLE Pairing
+            _buildOptionCard(
+              icon: Icons.bluetooth,
+              title: 'Bluetooth Pairing',
+              subtitle: 'Scan for nearby devices (requires Tuya login)',
+              recommended: false,
+              onTap: () async {
+                Navigator.pop(context);
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const TuyaScanScreen()),
+                );
+                if (result == true) {
+                  _loadDevices();
+                }
+              },
+            ),
+            
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOptionCard({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required bool recommended,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: recommended 
+              ? AppTheme.primaryColor.withOpacity(0.1)
+              : Colors.white.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: recommended
+                ? AppTheme.primaryColor.withOpacity(0.3)
+                : Colors.white.withOpacity(0.1),
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: recommended
+                    ? AppTheme.primaryColor.withOpacity(0.2)
+                    : Colors.white.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                icon,
+                color: recommended ? AppTheme.primaryColor : Colors.white70,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
+                      ),
+                      if (recommended) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppTheme.successColor,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'Easy',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              color: Colors.white.withOpacity(0.3),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showUnlinkConfirmation(int index) {
+    final device = _devices[index];
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.surfaceColor,
+        title: const Text('Unlink Device?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Are you sure you want to unlink "${device.name}"?\n\n'
+          'Future recordings from this device won\'t be saved to your account until you pair it again.',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.errorColor,
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              _removeDevice(index);
+            },
+            child: const Text('Unlink'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -120,15 +324,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     ElevatedButton.icon(
-                      onPressed: () async {
-                        final result = await Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const ScanScreen()),
-                        );
-                        if (result == true) {
-                          _loadKnownDevices();
-                        }
-                      },
+                      onPressed: () => _showAddDeviceOptions(),
                       icon: const Icon(Icons.add),
                       label: const Text('Add New Device'),
                       style: ElevatedButton.styleFrom(
@@ -150,7 +346,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 ),
               ),
             ),
-            if (_knownDevices.isEmpty)
+            if (_isLoading)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: CircularProgressIndicator(),
+                ),
+              )
+            else if (_devices.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: Center(
@@ -160,8 +363,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
                       Icon(Icons.bluetooth_disabled, size: 64, color: Colors.white.withOpacity(0.2)),
                       const SizedBox(height: AppTheme.spacingM),
                       Text(
-                        'No saved devices yet',
+                        'No linked devices yet',
                         style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                      ),
+                      const SizedBox(height: AppTheme.spacingS),
+                      Text(
+                        'Pair a PracticePod to save recordings to your account',
+                        style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 12),
+                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),
@@ -173,9 +382,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
                 sliver: SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
-                      final device = _knownDevices[index];
-                      final lastConnected = DateTime.parse(device['lastConnected'] ?? DateTime.now().toIso8601String());
-                      final formattedDate = DateFormat.yMMMd().add_jm().format(lastConnected);
+                      final device = _devices[index];
+                      final linkedDate = DateFormat.yMMMd().format(device.createdAt);
+                      final lastUpload = device.lastUploadAt != null
+                          ? DateFormat.yMMMd().add_jm().format(device.lastUploadAt!)
+                          : 'Never';
 
                       return GradientCard(
                         margin: const EdgeInsets.only(bottom: AppTheme.spacingM),
@@ -186,24 +397,39 @@ class _DevicesScreenState extends State<DevicesScreen> {
                               color: AppTheme.primaryLight.withOpacity(0.1),
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(Icons.bluetooth, color: AppTheme.primaryLight),
+                            child: const Icon(Icons.speaker, color: AppTheme.primaryLight),
                           ),
                           title: Text(
-                            device['name'] ?? 'Unknown Device',
+                            device.name,
                             style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
                           ),
-                          subtitle: Text(
-                            'Last connected: $formattedDate',
-                            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Linked: $linkedDate',
+                                style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                              ),
+                              Text(
+                                'Last upload: $lastUpload',
+                                style: TextStyle(
+                                  color: device.lastUploadAt != null 
+                                      ? AppTheme.successColor.withOpacity(0.8)
+                                      : AppTheme.textSecondary,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
                           ),
+                          isThreeLine: true,
                           trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, color: AppTheme.errorColor),
-                            onPressed: () => _removeDevice(index),
+                            icon: const Icon(Icons.link_off, color: AppTheme.errorColor),
+                            onPressed: () => _showUnlinkConfirmation(index),
                           ),
                         ),
                       );
                     },
-                    childCount: _knownDevices.length,
+                    childCount: _devices.length,
                   ),
                 ),
               ),

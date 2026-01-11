@@ -6,7 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import 'package:mobile_app_flutter/repositories/auth_repository.dart';
 import 'package:mobile_app_flutter/blocs/auth/auth_bloc.dart';
 import 'package:mobile_app_flutter/screens/login_screen.dart';
-import 'package:mobile_app_flutter/screens/home_screen.dart';
+import 'package:mobile_app_flutter/screens/main_screen.dart';
 import 'package:mobile_app_flutter/screens/instrument_selection_screen.dart';
 import 'package:mobile_app_flutter/services/ble_service.dart';
 import 'package:mobile_app_flutter/services/audio_service.dart';
@@ -18,6 +18,7 @@ import 'package:mobile_app_flutter/utils/app_localizations.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:tuya_home_sdk_flutter/tuya_home_sdk_flutter.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,6 +39,18 @@ void main() async {
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
   );
+
+  // Initialize Tuya Home SDK
+  // App Key/Secret from Tuya IoT Platform -> App SDK
+  try {
+    await TuyaHomeSdkFlutter.instance.initSdk(
+        "ejte7x357vxuy7vyvkc7",
+        "j3rwjuwnckkw9rk773dwcetwag8rsfrr",
+        "");
+    debugPrint("Tuya SDK Initialized Successfully");
+  } catch (e) {
+    debugPrint("Tuya SDK Init Failed: $e");
+  }
 
   // Deep link handling is done in AuthWrapper
 
@@ -134,7 +147,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
           if (!_hasSelectedInstrument(user)) {
             return const InstrumentSelectionScreen();
           }
-          return const HomeScreen();
+          return const MainScreen();
         }
         return const LoginScreen();
       },

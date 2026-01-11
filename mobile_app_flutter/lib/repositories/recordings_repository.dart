@@ -27,7 +27,7 @@ class Recording {
       id: json['id'],
       userId: json['user_id'],
       audioUrl: json['audio_url'],
-      createdAt: DateTime.parse(json['created_at']),
+      createdAt: DateTime.parse(json['created_at']).subtract(const Duration(hours: 8)),
       title: json['title'] ?? 'Untitled Recording',
       durationSeconds: json['duration_seconds'] ?? 0,
       accuracyScore: json['accuracy_score'],
@@ -68,6 +68,40 @@ class RecordingsRepository {
       return Recording.fromJson(response);
     } catch (e) {
       return null;
+    }
+  }
+
+  Future<Recording?> updateRecording(String id, {String? title}) async {
+    try {
+      final updates = <String, dynamic>{};
+      if (title != null) updates['title'] = title;
+      
+      if (updates.isEmpty) return null;
+      
+      final response = await _supabase
+          .from('recordings')
+          .update(updates)
+          .eq('id', id)
+          .select()
+          .single();
+      
+      return Recording.fromJson(response);
+    } catch (e) {
+      print('RecordingsRepository: Error updating recording: $e');
+      return null;
+    }
+  }
+
+  Future<bool> deleteRecording(String id) async {
+    try {
+      await _supabase
+          .from('recordings')
+          .delete()
+          .eq('id', id);
+      return true;
+    } catch (e) {
+      print('RecordingsRepository: Error deleting recording: $e');
+      return false;
     }
   }
 }

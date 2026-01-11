@@ -79,7 +79,7 @@ class _SheetMusicProcessScreenState extends State<SheetMusicProcessScreen> {
     try {
       final request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://10.0.0.146:5001/api/upload-sheet-music'), // Using Mac local IP and port 5001
+        Uri.parse('http://192.168.34.176:5001/api/upload-sheet-music'), // Using Mac local IP and port 5001
       );
 
       final session = Supabase.instance.client.auth.currentSession;

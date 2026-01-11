@@ -6,6 +6,7 @@ class SheetMusic {
   final String title;
   final String fileUrl;
   final Map<String, dynamic> referenceData;
+  final String? audiverisRawOutput;
   final DateTime createdAt;
 
   SheetMusic({
@@ -14,6 +15,7 @@ class SheetMusic {
     required this.title,
     required this.fileUrl,
     required this.referenceData,
+    this.audiverisRawOutput,
     required this.createdAt,
   });
 
@@ -39,8 +41,9 @@ class SheetMusic {
       title: json['title']?.toString() ?? 'Untitled',
       fileUrl: json['file_url']?.toString() ?? '',
       referenceData: referenceData,
+      audiverisRawOutput: json['audiveris_raw_output']?.toString(),
       createdAt: json['created_at'] != null 
-          ? DateTime.parse(json['created_at'].toString())
+          ? DateTime.parse(json['created_at'].toString()).subtract(const Duration(hours: 8))
           : DateTime.now(),
     );
   }
@@ -52,6 +55,7 @@ class SheetMusic {
       'title': title,
       'file_url': fileUrl,
       'reference_data': referenceData,
+      'audiveris_raw_output': audiverisRawOutput,
       'created_at': createdAt.toIso8601String(),
     };
   }

@@ -51,7 +51,9 @@ dependencies:
   bloc: ^9.2.0
   flutter_dotenv: ^6.0.0
   google_sign_in: ^7.2.0
+  tuya_home_sdk_flutter: ^0.2.1
   crypto: ^3.0.3
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:
