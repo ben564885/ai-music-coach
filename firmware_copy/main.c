@@ -24,6 +24,7 @@
 #include "tal_wifi.h"
 #include "tkl_audio.h"
 #include "tkl_fs.h"
+#include "tkl_memory.h"
 #include "tkl_output.h"
 #include "tuya_iot.h"
 #include "tuya_ringbuf.h"
@@ -31,6 +32,10 @@
 #include <string.h>
 
 #include "tkl_gpio.h" // For LED Debug
+
+#include "coach_voice.h"
+#include "voice_assistant.h"
+#include "voice_debug_overlay.h"
 
 #define DISPLAY_NAME "display"
 
@@ -76,7 +81,8 @@ typedef enum {
   SCREEN_VIEW_UPLOAD,
   SCREEN_PLAYBACK,
   SCREEN_SELECT_SESSION, // For analyze - session selection
-  SCREEN_SELECT_SHEET    // For analyze - sheet music selection
+  SCREEN_SELECT_SHEET,   // For analyze - sheet music selection
+  SCREEN_ANALYSIS_RESULT // Dedicated screen for analysis feedback
 } screen_state_t;
 
 #define MAX_SESSIONS 5
@@ -117,7 +123,7 @@ typedef struct {
   int session_count;
   BOOL_T sessions_loaded;
   BOOL_T is_analyzing;
-  char analyze_feedback[512];
+  char analyze_feedback[4096]; // Increased for detailed AI feedback
 
   // Debug: last HTTP status
   int last_http_status;
@@ -143,12 +149,10 @@ typedef struct {
   lv_obj_t *analyze_screen;
   lv_obj_t *analyze_status;
   lv_obj_t *analyze_btn;
-  lv_obj_t *analyze_result_cont;
-  lv_obj_t *analyze_result_label;
   lv_obj_t *analyze_session_btn;
   lv_obj_t *analyze_sheet_btn;
-  lv_obj_t *analyze_session_label;
-  lv_obj_t *analyze_sheet_label;
+  lv_obj_t *analyze_session_title_label; // Label showing selected session
+  lv_obj_t *analyze_sheet_title_label;   // Label showing selected sheet music
 
   // Analyze selection state
   int selected_session_idx;
@@ -196,6 +200,27 @@ typedef struct {
   lv_obj_t *view_upload_date_label;
   int current_upload_idx;
 
+  // Analysis result screen (beautiful rating UI)
+  lv_obj_t *analysis_result_screen;
+  lv_obj_t *analysis_result_title;
+  lv_obj_t *analysis_score_arc;       // Circular score indicator
+  lv_obj_t *analysis_score_label;     // Large score number
+  lv_obj_t *analysis_score_desc;      // Score description (e.g., "Great!")
+  lv_obj_t *analysis_pro_card;        // Green card for main strength
+  lv_obj_t *analysis_pro_icon;
+  lv_obj_t *analysis_pro_title;
+  lv_obj_t *analysis_pro_text;
+  lv_obj_t *analysis_con_card;        // Red card for main weakness
+  lv_obj_t *analysis_con_icon;
+  lv_obj_t *analysis_con_title;
+  lv_obj_t *analysis_con_text;
+  lv_obj_t *analysis_done_btn;
+  
+  // Parsed analysis data
+  int parsed_score;
+  char parsed_pro[512];
+  char parsed_con[512];
+
   // Playback screen
   lv_obj_t *playback_screen;
   lv_obj_t *playback_title_label;
@@ -230,6 +255,102 @@ typedef struct {
 static recorder_mgr_t g_recorder;
 static BOOL_T g_net_connected = FALSE;
 
+// =================================================================
+// LIVE VOICE COACH UI BRIDGE (ai_audio -> LVGL)
+// (These functions are called from `coach_voice.c`, potentially off-thread.)
+// =================================================================
+
+typedef enum {
+  COACH_UI_UPD_STATUS = 0,
+  COACH_UI_UPD_USER_TEXT,
+  COACH_UI_UPD_ASSISTANT_TEXT_START,
+  COACH_UI_UPD_ASSISTANT_TEXT_DATA,
+  COACH_UI_UPD_ASSISTANT_TEXT_END,
+} coach_ui_update_type_t;
+
+typedef struct {
+  coach_ui_update_type_t type;
+  uint32_t len; // bytes in text (may be 0)
+  char *text;   // heap-owned, NUL-terminated (may be NULL)
+} coach_ui_update_t;
+
+// Voice chat UI has been removed from analysis result screen.
+// The new UI shows a clean rating display with pro/con cards.
+
+static void coach_ui_apply_async(void *p) {
+  coach_ui_update_t *u = (coach_ui_update_t *)p;
+  if (!u)
+    return;
+
+  // Voice chat UI has been removed from analysis screen.
+  // These callbacks are kept for potential future use on other screens.
+  switch (u->type) {
+  case COACH_UI_UPD_STATUS:
+  case COACH_UI_UPD_USER_TEXT:
+  case COACH_UI_UPD_ASSISTANT_TEXT_START:
+  case COACH_UI_UPD_ASSISTANT_TEXT_DATA:
+  case COACH_UI_UPD_ASSISTANT_TEXT_END:
+    // No-op - voice chat UI removed
+    break;
+  default:
+    break;
+  }
+
+  if (u->text) {
+    tkl_system_psram_free(u->text);
+  }
+  tkl_system_psram_free(u);
+}
+
+static void coach_ui_post(coach_ui_update_type_t type, const char *text,
+                          uint32_t len) {
+  coach_ui_update_t *u =
+      (coach_ui_update_t *)tkl_system_psram_malloc(sizeof(coach_ui_update_t));
+  if (!u)
+    return;
+  memset(u, 0, sizeof(*u));
+  u->type = type;
+
+  if (text && len > 0) {
+    u->text = (char *)tkl_system_psram_malloc(len + 1);
+    if (!u->text) {
+      tkl_system_psram_free(u);
+      return;
+    }
+    memcpy(u->text, text, len);
+    u->text[len] = '\0';
+    u->len = len;
+  }
+
+  lv_async_call(coach_ui_apply_async, u);
+}
+
+void coach_ui_on_status(const char *status) {
+  if (!status)
+    return;
+  coach_ui_post(COACH_UI_UPD_STATUS, status, (uint32_t)strlen(status));
+}
+
+void coach_ui_on_user_text(const char *text, uint32_t len) {
+  if (!text || len == 0)
+    return;
+  coach_ui_post(COACH_UI_UPD_USER_TEXT, text, len);
+}
+
+void coach_ui_on_assistant_text_start(void) {
+  coach_ui_post(COACH_UI_UPD_ASSISTANT_TEXT_START, NULL, 0);
+}
+
+void coach_ui_on_assistant_text_data(const char *text, uint32_t len) {
+  if (!text || len == 0)
+    return;
+  coach_ui_post(COACH_UI_UPD_ASSISTANT_TEXT_DATA, text, len);
+}
+
+void coach_ui_on_assistant_text_end(void) {
+  coach_ui_post(COACH_UI_UPD_ASSISTANT_TEXT_END, NULL, 0);
+}
+
 // Forward declarations
 static void create_main_ui(void);
 static void show_main_screen(void);
@@ -241,13 +362,15 @@ static void show_view_upload_screen(int upload_idx);
 static void show_playback_screen(int session_idx);
 static void show_select_session_screen(void);
 static void show_select_sheet_screen(void);
+static void show_analysis_result_screen(void);
+static void create_analysis_result_screen(void);
 // static void app_fs_init(void);  // SD card disabled
 static void app_audio_init(void);
 static void control_recording(BOOL_T start);
 static void ui_timer_cb(lv_timer_t *timer);
 static void fetch_sessions(void);
 static void fetch_uploads(void);
-static void analyze_last_recording(void);
+static void analyze_selected_recording(void);
 static void update_sessions_ui(void);
 static void show_sessions_blocking_overlay(void);
 static void hide_sessions_blocking_overlay(void);
@@ -363,6 +486,10 @@ static VOID device_init(VOID) {
   PR_NOTICE("[INIT] Step 3: Creating UI...");
   create_main_ui();
   PR_DEBUG("[INIT] UI created");
+
+  // Voice debug overlay (on-device logs)
+  voice_debug_overlay_init(NULL);
+  voice_debug_overlay_set_visible(false);
 
   // SD card disabled - uploading directly to cloud
   // PR_DEBUG("[INIT] Initializing filesystem...");
@@ -508,6 +635,11 @@ static void manual_upload_recording(const char *filepath, size_t file_size,
 // get_next_filename() removed - no longer needed since we skip SD card
 
 static int _audio_frame_put(TKL_AUDIO_FRAME_INFO_T *pframe) {
+  // Send to voice assistant (for wake word detection and chat)
+  extern void voice_assistant_audio_callback(uint8_t *data, uint32_t len);
+  voice_assistant_audio_callback((uint8_t *)pframe->pbuf, pframe->used_size);
+  
+  // Also handle recording for practice sessions
   if (g_recorder.is_recording && g_recorder.pcm_ringbuf) {
     tuya_ring_buff_write(g_recorder.pcm_ringbuf, pframe->pbuf,
                          pframe->used_size);
@@ -653,6 +785,19 @@ static void save_recording(void) {
 // UI Timer Callback
 static void ui_timer_cb(lv_timer_t *timer) {
   (void)timer;
+
+  // Voice debug overlay refresh (~5 Hz)
+  static uint32_t voice_dbg_tick = 0;
+  if (++voice_dbg_tick % 4 == 0) { // 50ms * 4 = 200ms
+    bool convo_on = voice_assistant_is_conversation_active();
+    voice_debug_overlay_set_visible(convo_on);
+    if (convo_on) {
+      voice_assistant_debug_t dbg = {0};
+      voice_assistant_get_debug(&dbg);
+      voice_debug_overlay_update(dbg.vad_status, dbg.silence_frames, dbg.ringbuf_used_bytes,
+                                 dbg.last_http_client_status, dbg.last_http_status_code);
+    }
+  }
 
   // Poll WiFi Status periodically (every ~1 sec = 20 ticks)
   static uint32_t poll_cnt = 0;
@@ -1002,7 +1147,12 @@ static void fetch_sessions(void) {
 }
 
 static void fetch_uploads(void) {
+  char debug_msg[128];
+  
   if (!g_net_connected) {
+    if (g_recorder.uploads_status_label) {
+      lv_label_set_text(g_recorder.uploads_status_label, "ERR: No WiFi");
+    }
     g_recorder.uploads_loaded = TRUE;
     g_recorder.upload_count = 0;
     return;
@@ -1014,6 +1164,10 @@ static void fetch_uploads(void) {
   http_client_header_t headers[] = {
       {.key = "Content-Type", .value = "application/json"},
       {.key = "X-User-ID", .value = dev_id}};
+
+  if (g_recorder.uploads_status_label) {
+    lv_label_set_text(g_recorder.uploads_status_label, "Fetching...");
+  }
 
   http_client_status_t status = http_client_request(
       &(const http_client_request_t){.host = CLOUD_BACKEND_HOST,
@@ -1030,6 +1184,10 @@ static void fetch_uploads(void) {
       &response);
 
   if (status != HTTP_CLIENT_SUCCESS || response.status_code != 200) {
+    snprintf(debug_msg, sizeof(debug_msg), "ERR: HTTP %d/%d", status, response.status_code);
+    if (g_recorder.uploads_status_label) {
+      lv_label_set_text(g_recorder.uploads_status_label, debug_msg);
+    }
     g_recorder.upload_count = 0;
     g_recorder.uploads_loaded = TRUE;
     http_client_free(&response);
@@ -1038,28 +1196,32 @@ static void fetch_uploads(void) {
 
   // Parse JSON response
   g_recorder.upload_count = 0;
+  int json_array_count = 0;  // Track how many items server returned
+  int parse_fail_reason = 0; // 1=no body, 2=parse fail, 3=no key, 4=not array
 
   if (response.body && response.body_length > 0) {
     cJSON *root = cJSON_Parse((char *)response.body);
     if (root) {
       cJSON *uploads = cJSON_GetObjectItem(root, "sheet_music");
-      if (uploads && cJSON_IsArray(uploads)) {
-        int count = cJSON_GetArraySize(uploads);
-        if (count > MAX_UPLOADS)
-          count = MAX_UPLOADS;
+      if (uploads) {
+        if (cJSON_IsArray(uploads)) {
+          json_array_count = cJSON_GetArraySize(uploads);
+          int count = json_array_count;
+          if (count > MAX_UPLOADS)
+            count = MAX_UPLOADS;
 
-        for (int i = 0; i < count; i++) {
-          cJSON *upload = cJSON_GetArrayItem(uploads, i);
-          if (upload) {
-            cJSON *id = cJSON_GetObjectItem(upload, "id");
-            cJSON *title = cJSON_GetObjectItem(upload, "title");
-            cJSON *created = cJSON_GetObjectItem(upload, "created_at");
-            cJSON *file_url = cJSON_GetObjectItem(upload, "file_url");
-            cJSON *ref_data = cJSON_GetObjectItem(upload, "reference_data");
-            cJSON *audiveris =
-                cJSON_GetObjectItem(upload, "audiveris_raw_output");
+          for (int i = 0; i < count; i++) {
+            cJSON *upload = cJSON_GetArrayItem(uploads, i);
+            if (upload) {
+              cJSON *id = cJSON_GetObjectItem(upload, "id");
+              cJSON *title = cJSON_GetObjectItem(upload, "title");
+              cJSON *created = cJSON_GetObjectItem(upload, "created_at");
+              cJSON *file_url = cJSON_GetObjectItem(upload, "file_url");
+              cJSON *ref_data = cJSON_GetObjectItem(upload, "reference_data");
+              cJSON *audiveris =
+                  cJSON_GetObjectItem(upload, "audiveris_raw_output");
 
-            if (id && title) {
+              if (id && title) {
               strncpy(g_recorder.uploads[i].id,
                       cJSON_GetStringValue(id) ? cJSON_GetStringValue(id) : "",
                       sizeof(g_recorder.uploads[i].id) - 1);
@@ -1150,19 +1312,32 @@ static void fetch_uploads(void) {
               }
 
               g_recorder.upload_count++;
+              }
             }
           }
+        } else {
+          parse_fail_reason = 4; // not array
         }
+      } else {
+        parse_fail_reason = 3; // no key
       }
       cJSON_Delete(root);
+    } else {
+      parse_fail_reason = 2; // parse fail
     }
+  } else {
+    parse_fail_reason = 1; // no body
   }
+
+  // Store debug info for display - use last_http_code field to store array count
+  g_recorder.last_http_code = json_array_count;
+  g_recorder.last_http_status = parse_fail_reason;
 
   g_recorder.uploads_loaded = TRUE;
   http_client_free(&response);
 }
 
-static void analyze_last_recording(void) {
+static void analyze_selected_recording(void) {
   if (!g_net_connected) {
     strncpy(g_recorder.analyze_feedback, "No network connection",
             sizeof(g_recorder.analyze_feedback));
@@ -1170,33 +1345,48 @@ static void analyze_last_recording(void) {
     return;
   }
 
-  if (g_recorder.session_count == 0) {
+  // Check that both session and sheet music are selected
+  if (g_recorder.selected_session_idx < 0 ||
+      g_recorder.selected_session_idx >= g_recorder.session_count) {
     strncpy(g_recorder.analyze_feedback,
-            "No recordings to analyze.\nRecord something first!",
+            "Please select a recording first.",
             sizeof(g_recorder.analyze_feedback));
     g_recorder.is_analyzing = FALSE;
     return;
   }
 
-  PR_NOTICE("Analyzing last recording...");
+  if (g_recorder.selected_upload_idx < 0 ||
+      g_recorder.selected_upload_idx >= g_recorder.upload_count) {
+    strncpy(g_recorder.analyze_feedback,
+            "Please select sheet music first.",
+            sizeof(g_recorder.analyze_feedback));
+    g_recorder.is_analyzing = FALSE;
+    return;
+  }
+
+  const char *recording_id = g_recorder.sessions[g_recorder.selected_session_idx].id;
+  const char *sheet_music_id = g_recorder.uploads[g_recorder.selected_upload_idx].id;
+
+  PR_NOTICE("Analyzing recording %s vs sheet %s", recording_id, sheet_music_id);
   g_recorder.is_analyzing = TRUE;
-  strncpy(g_recorder.analyze_feedback, "Analyzing...",
+  strncpy(g_recorder.analyze_feedback, "Analyzing with AI...",
           sizeof(g_recorder.analyze_feedback));
 
   // Get device ID - ALWAYS use hardcoded UUID (tuya_iot_devid_get returns
   // garbage)
   const char *dev_id = DEVICE_UUID;
 
-  // Build request body with last recording ID
+  // Build request body with selected recording and sheet music IDs
   char body[256];
   snprintf(body, sizeof(body),
-           "{\"recording_id\":\"%s\",\"use_latest_upload\":true}",
-           g_recorder.sessions[0].id);
+           "{\"recording_id\":\"%s\",\"sheet_music_id\":\"%s\"}",
+           recording_id, sheet_music_id);
 
   http_client_response_t response = {0};
   http_client_header_t headers[] = {
       {.key = "Content-Type", .value = "application/json"},
-      {.key = "X-User-ID", .value = dev_id}};
+      {.key = "X-User-ID", .value = dev_id},
+      {.key = "Connection", .value = "close"}};
 
   http_client_status_t status = http_client_request(
       &(const http_client_request_t){
@@ -1207,7 +1397,7 @@ static void analyze_last_recording(void) {
           .cacert_len = 0,
           .method = "POST",
           .headers = headers,
-          .headers_count = 2,
+          .headers_count = 3,
           .body = (uint8_t *)body,
           .body_length = strlen(body),
           .timeout_ms = 60000 // 60 sec for AI analysis
@@ -1220,6 +1410,8 @@ static void analyze_last_recording(void) {
     snprintf(g_recorder.analyze_feedback, sizeof(g_recorder.analyze_feedback),
              "Request failed: %d", status);
     http_client_free(&response);
+    update_analyze_ui();
+    lv_timer_handler();
     return;
   }
 
@@ -1227,6 +1419,8 @@ static void analyze_last_recording(void) {
     snprintf(g_recorder.analyze_feedback, sizeof(g_recorder.analyze_feedback),
              "Server error: %d", response.status_code);
     http_client_free(&response);
+    update_analyze_ui();
+    lv_timer_handler();
     return;
   }
 
@@ -1249,8 +1443,12 @@ static void analyze_last_recording(void) {
     }
   }
 
-  PR_NOTICE("Analysis complete");
+  PR_NOTICE("Analysis complete: %s", g_recorder.analyze_feedback);
   http_client_free(&response);
+  
+  // Navigate to dedicated analysis result screen
+  show_analysis_result_screen();
+  lv_timer_handler();
 }
 
 // =================================================================
@@ -1345,9 +1543,8 @@ static void btn_do_analyze_cb(lv_event_t *e) {
   lv_label_set_text(g_recorder.analyze_status, "Analyzing with AI...");
   g_recorder.is_analyzing = TRUE;
 
-  // TODO: Call analyze with selected session and sheet music IDs
-  // For now, use the existing analyze function
-  analyze_last_recording();
+  // Call analyze with selected session and sheet music IDs
+  analyze_selected_recording();
   update_analyze_ui();
 }
 
@@ -1695,20 +1892,12 @@ static void create_analyze_screen(void) {
   lv_obj_set_flex_flow(session_text_cont, LV_FLEX_FLOW_COLUMN);
   lv_obj_remove_flag(session_text_cont, LV_OBJ_FLAG_CLICKABLE);
 
-  lv_obj_t *session_title = lv_label_create(session_text_cont);
-  lv_label_set_text(session_title, "Select Session");
-  lv_obj_set_style_text_color(session_title, lv_color_hex(0xffffff),
+  g_recorder.analyze_session_title_label = lv_label_create(session_text_cont);
+  lv_label_set_text(g_recorder.analyze_session_title_label, "Select Session");
+  lv_obj_set_style_text_color(g_recorder.analyze_session_title_label, lv_color_hex(0xffffff),
                               LV_PART_MAIN);
-  lv_obj_set_style_text_font(session_title, &lv_font_montserrat_16,
+  lv_obj_set_style_text_font(g_recorder.analyze_session_title_label, &lv_font_montserrat_16,
                              LV_PART_MAIN);
-
-  g_recorder.analyze_session_label = lv_label_create(session_text_cont);
-  lv_label_set_text(g_recorder.analyze_session_label,
-                    "Tap to choose a recording");
-  lv_obj_set_style_text_color(g_recorder.analyze_session_label,
-                              lv_color_hex(0x888888), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analyze_session_label,
-                             &lv_font_montserrat_14, LV_PART_MAIN);
 
   // ===== Button 2: Select Sheet Music =====
   g_recorder.analyze_sheet_btn = lv_button_create(main_cont);
@@ -1760,23 +1949,15 @@ static void create_analyze_screen(void) {
   lv_obj_set_flex_flow(sheet_text_cont, LV_FLEX_FLOW_COLUMN);
   lv_obj_remove_flag(sheet_text_cont, LV_OBJ_FLAG_CLICKABLE);
 
-  lv_obj_t *sheet_title = lv_label_create(sheet_text_cont);
-  lv_label_set_text(sheet_title, "Select Sheet Music");
-  lv_obj_set_style_text_color(sheet_title, lv_color_hex(0xffffff),
+  g_recorder.analyze_sheet_title_label = lv_label_create(sheet_text_cont);
+  lv_label_set_text(g_recorder.analyze_sheet_title_label, "Select Sheet Music");
+  lv_obj_set_style_text_color(g_recorder.analyze_sheet_title_label, lv_color_hex(0xffffff),
                               LV_PART_MAIN);
-  lv_obj_set_style_text_font(sheet_title, &lv_font_montserrat_16, LV_PART_MAIN);
-
-  g_recorder.analyze_sheet_label = lv_label_create(sheet_text_cont);
-  lv_label_set_text(g_recorder.analyze_sheet_label,
-                    "Tap to choose sheet music");
-  lv_obj_set_style_text_color(g_recorder.analyze_sheet_label,
-                              lv_color_hex(0x888888), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analyze_sheet_label,
-                             &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analyze_sheet_title_label, &lv_font_montserrat_16, LV_PART_MAIN);
 
   // ===== Analyze Button (disabled until both selected) =====
   g_recorder.analyze_btn = lv_button_create(main_cont);
-  lv_obj_set_size(g_recorder.analyze_btn, LV_PCT(100), 55);
+  lv_obj_set_size(g_recorder.analyze_btn, LV_PCT(100), 75);
   lv_obj_set_style_bg_color(g_recorder.analyze_btn, lv_color_hex(0x444466),
                             LV_PART_MAIN);
   lv_obj_set_style_bg_color(g_recorder.analyze_btn, lv_color_hex(0x11998e),
@@ -1809,64 +1990,9 @@ static void create_analyze_screen(void) {
   lv_label_set_text(btn_text, "Start Analysis");
   lv_obj_set_style_text_color(btn_text, lv_color_hex(0xffffff), LV_PART_MAIN);
   lv_obj_set_style_text_font(btn_text, &lv_font_montserrat_16, LV_PART_MAIN);
-
-  // ===== Result container (scrollable) =====
-  g_recorder.analyze_result_cont = lv_obj_create(main_cont);
-  lv_obj_set_size(g_recorder.analyze_result_cont, LV_PCT(100), 80);
-  lv_obj_set_style_bg_color(g_recorder.analyze_result_cont,
-                            lv_color_hex(0x222244), LV_PART_MAIN);
-  lv_obj_set_style_radius(g_recorder.analyze_result_cont, 12, LV_PART_MAIN);
-  lv_obj_set_style_border_width(g_recorder.analyze_result_cont, 0,
-                                LV_PART_MAIN);
-  lv_obj_set_style_pad_all(g_recorder.analyze_result_cont, 12, LV_PART_MAIN);
-  lv_obj_add_flag(g_recorder.analyze_result_cont, LV_OBJ_FLAG_HIDDEN);
-
-  g_recorder.analyze_result_label =
-      lv_label_create(g_recorder.analyze_result_cont);
-  lv_label_set_text(g_recorder.analyze_result_label, "");
-  lv_obj_set_width(g_recorder.analyze_result_label, LV_PCT(100));
-  lv_label_set_long_mode(g_recorder.analyze_result_label, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_color(g_recorder.analyze_result_label,
-                              lv_color_hex(0xcccccc), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analyze_result_label,
-                             &lv_font_montserrat_14, LV_PART_MAIN);
 }
 
 static void update_analyze_ui(void) {
-  // Update session selection label
-  if (g_recorder.analyze_session_label) {
-    if (g_recorder.selected_session_idx >= 0 &&
-        g_recorder.selected_session_idx < g_recorder.session_count) {
-      lv_label_set_text(
-          g_recorder.analyze_session_label,
-          g_recorder.sessions[g_recorder.selected_session_idx].title);
-      lv_obj_set_style_text_color(g_recorder.analyze_session_label,
-                                  lv_color_hex(0x38EF7D), LV_PART_MAIN);
-    } else {
-      lv_label_set_text(g_recorder.analyze_session_label,
-                        "Tap to choose a recording");
-      lv_obj_set_style_text_color(g_recorder.analyze_session_label,
-                                  lv_color_hex(0x888888), LV_PART_MAIN);
-    }
-  }
-
-  // Update sheet selection label
-  if (g_recorder.analyze_sheet_label) {
-    if (g_recorder.selected_upload_idx >= 0 &&
-        g_recorder.selected_upload_idx < g_recorder.upload_count) {
-      lv_label_set_text(
-          g_recorder.analyze_sheet_label,
-          g_recorder.uploads[g_recorder.selected_upload_idx].title);
-      lv_obj_set_style_text_color(g_recorder.analyze_sheet_label,
-                                  lv_color_hex(0x38EF7D), LV_PART_MAIN);
-    } else {
-      lv_label_set_text(g_recorder.analyze_sheet_label,
-                        "Tap to choose sheet music");
-      lv_obj_set_style_text_color(g_recorder.analyze_sheet_label,
-                                  lv_color_hex(0x888888), LV_PART_MAIN);
-    }
-  }
-
   // Enable/disable analyze button based on selections
   if (g_recorder.analyze_btn) {
     BOOL_T both_selected = (g_recorder.selected_session_idx >= 0 &&
@@ -1880,12 +2006,25 @@ static void update_analyze_ui(void) {
     }
   }
 
-  // Update result display
-  if (g_recorder.analyze_result_label && g_recorder.analyze_result_cont) {
-    if (strlen(g_recorder.analyze_feedback) > 0) {
-      lv_label_set_text(g_recorder.analyze_result_label,
-                        g_recorder.analyze_feedback);
-      lv_obj_remove_flag(g_recorder.analyze_result_cont, LV_OBJ_FLAG_HIDDEN);
+  // Update session button label to show selected session
+  if (g_recorder.analyze_session_title_label) {
+    if (g_recorder.selected_session_idx >= 0 &&
+        g_recorder.selected_session_idx < g_recorder.session_count) {
+      lv_label_set_text(g_recorder.analyze_session_title_label,
+                        g_recorder.sessions[g_recorder.selected_session_idx].title);
+    } else {
+      lv_label_set_text(g_recorder.analyze_session_title_label, "Select Session");
+    }
+  }
+
+  // Update sheet music button label to show selected sheet music
+  if (g_recorder.analyze_sheet_title_label) {
+    if (g_recorder.selected_upload_idx >= 0 &&
+        g_recorder.selected_upload_idx < g_recorder.upload_count) {
+      lv_label_set_text(g_recorder.analyze_sheet_title_label,
+                        g_recorder.uploads[g_recorder.selected_upload_idx].title);
+    } else {
+      lv_label_set_text(g_recorder.analyze_sheet_title_label, "Select Sheet Music");
     }
   }
 
@@ -2217,8 +2356,11 @@ static void update_uploads_ui(void) {
 
   if (g_recorder.upload_count == 0) {
     char debug_msg[128];
-    snprintf(debug_msg, sizeof(debug_msg), "0 uploads WiFi:%s",
-             g_net_connected ? "Y" : "N");
+    // Show detailed debug: arr=server items, err=parse fail reason
+    // err: 0=ok, 1=no body, 2=JSON fail, 3=no key, 4=not array
+    snprintf(debug_msg, sizeof(debug_msg), "0 parsed, arr=%d, err=%d",
+             g_recorder.last_http_code,   // json_array_count
+             g_recorder.last_http_status); // parse_fail_reason
     lv_label_set_text(g_recorder.uploads_status_label, debug_msg);
     // Hide all items
     for (int i = 0; i < MAX_UPLOADS; i++) {
@@ -2298,6 +2440,163 @@ static void btn_select_sheet_cb(lv_event_t *e) {
     fetch_uploads();
   }
   show_select_sheet_screen();
+}
+
+// =================================================================
+// ANALYSIS RESULT SCREEN (Beautiful rating UI with pro/con cards)
+// =================================================================
+
+static void btn_analysis_result_back_cb(lv_event_t *e);
+
+static void btn_analysis_done_cb(lv_event_t *e) {
+  (void)e;
+  show_analyze_screen();
+}
+
+static void create_analysis_result_screen(void) {
+  g_recorder.analysis_result_screen = lv_obj_create(NULL);
+  
+  // Deep navy gradient background
+  lv_obj_set_style_bg_color(g_recorder.analysis_result_screen,
+                            lv_color_hex(0x0a0a14), LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_color(g_recorder.analysis_result_screen,
+                                  lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_dir(g_recorder.analysis_result_screen, LV_GRAD_DIR_VER, LV_PART_MAIN);
+
+  // Back button (top left)
+  lv_obj_t *back_btn = create_back_button(g_recorder.analysis_result_screen);
+  lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 12, 12);
+  lv_obj_add_event_cb(back_btn, btn_analysis_result_back_cb, LV_EVENT_CLICKED, NULL);
+
+  // =================================================================
+  // SCORE ARC - Large circular progress indicator
+  // =================================================================
+  g_recorder.analysis_score_arc = lv_arc_create(g_recorder.analysis_result_screen);
+  lv_obj_set_size(g_recorder.analysis_score_arc, 140, 140);
+  lv_obj_align(g_recorder.analysis_score_arc, LV_ALIGN_TOP_MID, 0, 55);
+  lv_arc_set_rotation(g_recorder.analysis_score_arc, 135);
+  lv_arc_set_bg_angles(g_recorder.analysis_score_arc, 0, 270);
+  lv_arc_set_range(g_recorder.analysis_score_arc, 0, 10);
+  lv_arc_set_value(g_recorder.analysis_score_arc, 0);
+  
+  // Arc styling - glowing effect
+  lv_obj_set_style_arc_width(g_recorder.analysis_score_arc, 12, LV_PART_MAIN);
+  lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, lv_color_hex(0x2a2a3d), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(g_recorder.analysis_score_arc, 12, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, lv_color_hex(0x38EF7D), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_rounded(g_recorder.analysis_score_arc, true, LV_PART_INDICATOR);
+  lv_obj_remove_style(g_recorder.analysis_score_arc, NULL, LV_PART_KNOB); // Hide knob
+
+  // Score number (inside arc)
+  g_recorder.analysis_score_label = lv_label_create(g_recorder.analysis_result_screen);
+  lv_label_set_text(g_recorder.analysis_score_label, "0");
+  lv_obj_align(g_recorder.analysis_score_label, LV_ALIGN_TOP_MID, 0, 100);
+  lv_obj_set_style_text_font(g_recorder.analysis_score_label, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_score_label, lv_color_hex(0xffffff), LV_PART_MAIN);
+
+  // Score description (below number, inside arc)
+  g_recorder.analysis_score_desc = lv_label_create(g_recorder.analysis_result_screen);
+  lv_label_set_text(g_recorder.analysis_score_desc, "out of 10");
+  lv_obj_align(g_recorder.analysis_score_desc, LV_ALIGN_TOP_MID, 0, 150);
+  lv_obj_set_style_text_font(g_recorder.analysis_score_desc, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_score_desc, lv_color_hex(0x888899), LV_PART_MAIN);
+
+  // =================================================================
+  // PRO CARD - Main Strength (Green accent)
+  // =================================================================
+  g_recorder.analysis_pro_card = lv_obj_create(g_recorder.analysis_result_screen);
+  lv_obj_set_size(g_recorder.analysis_pro_card, LV_PCT(90), 90);
+  lv_obj_align(g_recorder.analysis_pro_card, LV_ALIGN_TOP_MID, 0, 210);
+  lv_obj_set_style_bg_color(g_recorder.analysis_pro_card, lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.analysis_pro_card, LV_OPA_10, LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.analysis_pro_card, lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.analysis_pro_card, 2, LV_PART_MAIN);
+  lv_obj_set_style_border_opa(g_recorder.analysis_pro_card, LV_OPA_60, LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.analysis_pro_card, 16, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(g_recorder.analysis_pro_card, 12, LV_PART_MAIN);
+  lv_obj_set_scrollbar_mode(g_recorder.analysis_pro_card, LV_SCROLLBAR_MODE_OFF);
+
+  // Pro icon (star)
+  g_recorder.analysis_pro_icon = lv_label_create(g_recorder.analysis_pro_card);
+  lv_label_set_text(g_recorder.analysis_pro_icon, LV_SYMBOL_OK);
+  lv_obj_align(g_recorder.analysis_pro_icon, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_text_color(g_recorder.analysis_pro_icon, lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_pro_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+
+  // Pro title
+  g_recorder.analysis_pro_title = lv_label_create(g_recorder.analysis_pro_card);
+  lv_label_set_text(g_recorder.analysis_pro_title, "Main Strength");
+  lv_obj_align(g_recorder.analysis_pro_title, LV_ALIGN_TOP_LEFT, 28, 2);
+  lv_obj_set_style_text_color(g_recorder.analysis_pro_title, lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_pro_title, &lv_font_montserrat_14, LV_PART_MAIN);
+
+  // Pro text (the actual feedback)
+  g_recorder.analysis_pro_text = lv_label_create(g_recorder.analysis_pro_card);
+  lv_label_set_text(g_recorder.analysis_pro_text, "Loading...");
+  lv_obj_align(g_recorder.analysis_pro_text, LV_ALIGN_TOP_LEFT, 0, 28);
+  lv_obj_set_width(g_recorder.analysis_pro_text, LV_PCT(100));
+  lv_label_set_long_mode(g_recorder.analysis_pro_text, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_color(g_recorder.analysis_pro_text, lv_color_hex(0xe8e8e8), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_pro_text, &lv_font_montserrat_14, LV_PART_MAIN);
+
+  // =================================================================
+  // CON CARD - Area to Improve (Coral/Red accent)
+  // =================================================================
+  g_recorder.analysis_con_card = lv_obj_create(g_recorder.analysis_result_screen);
+  lv_obj_set_size(g_recorder.analysis_con_card, LV_PCT(90), 90);
+  lv_obj_align(g_recorder.analysis_con_card, LV_ALIGN_TOP_MID, 0, 310);
+  lv_obj_set_style_bg_color(g_recorder.analysis_con_card, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.analysis_con_card, LV_OPA_10, LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.analysis_con_card, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.analysis_con_card, 2, LV_PART_MAIN);
+  lv_obj_set_style_border_opa(g_recorder.analysis_con_card, LV_OPA_60, LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.analysis_con_card, 16, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(g_recorder.analysis_con_card, 12, LV_PART_MAIN);
+  lv_obj_set_scrollbar_mode(g_recorder.analysis_con_card, LV_SCROLLBAR_MODE_OFF);
+
+  // Con icon (arrow up for improvement)
+  g_recorder.analysis_con_icon = lv_label_create(g_recorder.analysis_con_card);
+  lv_label_set_text(g_recorder.analysis_con_icon, LV_SYMBOL_UP);
+  lv_obj_align(g_recorder.analysis_con_icon, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_text_color(g_recorder.analysis_con_icon, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_con_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+
+  // Con title
+  g_recorder.analysis_con_title = lv_label_create(g_recorder.analysis_con_card);
+  lv_label_set_text(g_recorder.analysis_con_title, "Area to Improve");
+  lv_obj_align(g_recorder.analysis_con_title, LV_ALIGN_TOP_LEFT, 28, 2);
+  lv_obj_set_style_text_color(g_recorder.analysis_con_title, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_con_title, &lv_font_montserrat_14, LV_PART_MAIN);
+
+  // Con text (the actual feedback)
+  g_recorder.analysis_con_text = lv_label_create(g_recorder.analysis_con_card);
+  lv_label_set_text(g_recorder.analysis_con_text, "Loading...");
+  lv_obj_align(g_recorder.analysis_con_text, LV_ALIGN_TOP_LEFT, 0, 28);
+  lv_obj_set_width(g_recorder.analysis_con_text, LV_PCT(100));
+  lv_label_set_long_mode(g_recorder.analysis_con_text, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_color(g_recorder.analysis_con_text, lv_color_hex(0xe8e8e8), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_con_text, &lv_font_montserrat_14, LV_PART_MAIN);
+
+  // =================================================================
+  // DONE BUTTON - Return to analyze screen
+  // =================================================================
+  g_recorder.analysis_done_btn = lv_button_create(g_recorder.analysis_result_screen);
+  lv_obj_set_size(g_recorder.analysis_done_btn, LV_PCT(90), 50);
+  lv_obj_align(g_recorder.analysis_done_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+  lv_obj_set_style_bg_color(g_recorder.analysis_done_btn, lv_color_hex(0x6C63FF), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(g_recorder.analysis_done_btn, lv_color_hex(0x8B83FF), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(g_recorder.analysis_done_btn, 25, LV_PART_MAIN);
+  lv_obj_set_style_shadow_width(g_recorder.analysis_done_btn, 15, LV_PART_MAIN);
+  lv_obj_set_style_shadow_color(g_recorder.analysis_done_btn, lv_color_hex(0x6C63FF), LV_PART_MAIN);
+  lv_obj_set_style_shadow_opa(g_recorder.analysis_done_btn, LV_OPA_40, LV_PART_MAIN);
+  
+  lv_obj_t *done_label = lv_label_create(g_recorder.analysis_done_btn);
+  lv_label_set_text(done_label, "Done");
+  lv_obj_center(done_label);
+  lv_obj_set_style_text_font(done_label, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(done_label, lv_color_hex(0xffffff), LV_PART_MAIN);
+
+  lv_obj_add_event_cb(g_recorder.analysis_done_btn, btn_analysis_done_cb, LV_EVENT_CLICKED, NULL);
 }
 
 static void create_select_session_screen(void) {
@@ -2535,6 +2834,11 @@ static void btn_playback_back_cb(lv_event_t *e) {
 static void btn_view_upload_back_cb(lv_event_t *e) {
   (void)e;
   show_uploads_screen();
+}
+
+static void btn_analysis_result_back_cb(lv_event_t *e) {
+  (void)e;
+  show_analyze_screen();
 }
 
 static void btn_play_pause_cb(lv_event_t *e) {
@@ -3436,6 +3740,234 @@ static void show_select_sheet_screen(void) {
   lv_screen_load(g_recorder.select_sheet_screen);
 }
 
+// Helper function to extract a section from feedback text
+// Expected format: "Score: X/10. Strength: [text]. Improve: [text]."
+static void extract_feedback_section(const char *feedback, const char *marker, char *out, size_t out_size) {
+  if (!feedback || !marker || !out || out_size == 0) return;
+  out[0] = '\0';
+  
+  // Find the marker position (exact match first)
+  const char *start = strstr(feedback, marker);
+  
+  // If not found, try case variations
+  if (!start) {
+    // Build lowercase version of marker for case-insensitive search
+    char marker_lower[32] = {0};
+    for (int i = 0; marker[i] && i < 31; i++) {
+      marker_lower[i] = (marker[i] >= 'A' && marker[i] <= 'Z') ? marker[i] + 32 : marker[i];
+    }
+    
+    // Search through feedback for case-insensitive match
+    const char *p = feedback;
+    while (*p) {
+      int match = 1;
+      for (int i = 0; marker_lower[i]; i++) {
+        char c = p[i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != marker_lower[i]) {
+          match = 0;
+          break;
+        }
+      }
+      if (match) {
+        start = p;
+        break;
+      }
+      p++;
+    }
+  }
+  
+  if (!start) {
+    strncpy(out, "See full feedback", out_size - 1);
+    out[out_size - 1] = '\0';
+    return;
+  }
+  
+  // Skip to after the colon
+  const char *content = strchr(start, ':');
+  if (content) {
+    content++; // Skip the colon
+    while (*content == ' ' || *content == '\n' || *content == '\t') content++; // Skip whitespace
+  } else {
+    content = start + strlen(marker);
+  }
+  
+  // Find the end - look for period followed by space and next section marker, or end of string
+  // Format: "Strength: text here. Improve: text here."
+  const char *end = content;
+  const char *best_end = NULL;
+  
+  while (*end) {
+    // Check for period that ends this section
+    if (*end == '.') {
+      // Check if this is followed by a new section marker
+      const char *after = end + 1;
+      while (*after == ' ') after++;
+      
+      // Check for known section markers after the period
+      if (strncmp(after, "Strength", 8) == 0 ||
+          strncmp(after, "Improve", 7) == 0 ||
+          strncmp(after, "Score", 5) == 0 ||
+          *after == '\0' || *after == '\n') {
+        // This period ends our section
+        best_end = end;
+        break;
+      }
+      // Otherwise this period is part of the content, continue
+    }
+    end++;
+  }
+  
+  // If we didn't find a clear end, use end of string
+  if (!best_end) {
+    best_end = end;
+  }
+  
+  // Copy the content (excluding the trailing period)
+  size_t len = best_end - content;
+  if (len >= out_size) len = out_size - 1;
+  strncpy(out, content, len);
+  out[len] = '\0';
+  
+  // Trim trailing whitespace and periods
+  while (len > 0 && (out[len-1] == ' ' || out[len-1] == '\n' || out[len-1] == '\r' || out[len-1] == '.')) {
+    out[--len] = '\0';
+  }
+}
+
+// Helper to get a score description based on value
+static const char* get_score_description(int score) {
+  if (score >= 9) return "Excellent!";
+  if (score >= 8) return "Great!";
+  if (score >= 7) return "Good!";
+  if (score >= 6) return "Decent";
+  if (score >= 5) return "Fair";
+  if (score >= 4) return "Needs Work";
+  return "Keep Practicing";
+}
+
+static void show_analysis_result_screen(void) {
+  g_recorder.current_screen = SCREEN_ANALYSIS_RESULT;
+
+  // =================================================================
+  // PARSE THE FEEDBACK - Extract score, pro, and con
+  // =================================================================
+  
+  // Default values
+  g_recorder.parsed_score = 0;
+  strncpy(g_recorder.parsed_pro, "Good effort overall!", sizeof(g_recorder.parsed_pro) - 1);
+  strncpy(g_recorder.parsed_con, "Keep practicing!", sizeof(g_recorder.parsed_con) - 1);
+  
+  const char *feedback = g_recorder.analyze_feedback;
+  
+  // Extract score - look for patterns like "7/10", "Score: 7", etc.
+  char *score_ptr = strstr(feedback, "/10");
+  if (score_ptr && score_ptr > feedback) {
+    char *num_start = score_ptr - 1;
+    while (num_start > feedback && *num_start >= '0' && *num_start <= '9') {
+      num_start--;
+    }
+    num_start++;
+    int score_val = 0;
+    if (sscanf(num_start, "%d", &score_val) == 1 && score_val >= 0 && score_val <= 10) {
+      g_recorder.parsed_score = score_val;
+    }
+  }
+  
+  // Try extracting structured feedback sections
+  extract_feedback_section(feedback, "Strength:", g_recorder.parsed_pro, sizeof(g_recorder.parsed_pro));
+  extract_feedback_section(feedback, "Improve:", g_recorder.parsed_con, sizeof(g_recorder.parsed_con));
+  
+  // If sections weren't found, try to intelligently split the feedback
+  if (strcmp(g_recorder.parsed_pro, "See full feedback") == 0 || strlen(g_recorder.parsed_pro) < 5) {
+    // Take first meaningful sentence as pro
+    const char *first_period = strchr(feedback, '.');
+    if (first_period && (first_period - feedback) > 10) {
+      size_t len = first_period - feedback + 1;
+      if (len >= sizeof(g_recorder.parsed_pro)) len = sizeof(g_recorder.parsed_pro) - 1;
+      strncpy(g_recorder.parsed_pro, feedback, len);
+      g_recorder.parsed_pro[len] = '\0';
+    }
+  }
+  
+  if (strcmp(g_recorder.parsed_con, "See full feedback") == 0 || strlen(g_recorder.parsed_con) < 5) {
+    // Look for improvement suggestions
+    const char *improve_markers[] = {"could", "should", "try", "work on", "practice", "focus", NULL};
+    for (int i = 0; improve_markers[i]; i++) {
+      const char *found = strstr(feedback, improve_markers[i]);
+      if (found) {
+        const char *end = strchr(found, '.');
+        if (end) {
+          size_t len = end - found + 1;
+          if (len >= sizeof(g_recorder.parsed_con)) len = sizeof(g_recorder.parsed_con) - 1;
+          strncpy(g_recorder.parsed_con, found, len);
+          g_recorder.parsed_con[len] = '\0';
+          break;
+        }
+      }
+    }
+  }
+
+  // =================================================================
+  // UPDATE UI ELEMENTS
+  // =================================================================
+  
+  // Update score arc
+  if (g_recorder.analysis_score_arc) {
+    lv_arc_set_value(g_recorder.analysis_score_arc, g_recorder.parsed_score);
+    
+    // Color based on score
+    lv_color_t score_color;
+    if (g_recorder.parsed_score >= 8) {
+      score_color = lv_color_hex(0x38EF7D); // Green
+    } else if (g_recorder.parsed_score >= 6) {
+      score_color = lv_color_hex(0xFFD93D); // Yellow
+    } else if (g_recorder.parsed_score >= 4) {
+      score_color = lv_color_hex(0xFFA726); // Orange
+    } else {
+      score_color = lv_color_hex(0xFF6B6B); // Red
+    }
+    lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, score_color, LV_PART_INDICATOR);
+  }
+  
+  // Update score label
+  if (g_recorder.analysis_score_label) {
+    char score_str[8];
+    snprintf(score_str, sizeof(score_str), "%d", g_recorder.parsed_score);
+    lv_label_set_text(g_recorder.analysis_score_label, score_str);
+  }
+  
+  // Update score description
+  if (g_recorder.analysis_score_desc) {
+    lv_label_set_text(g_recorder.analysis_score_desc, get_score_description(g_recorder.parsed_score));
+    
+    // Match description color to score
+    lv_color_t desc_color;
+    if (g_recorder.parsed_score >= 8) {
+      desc_color = lv_color_hex(0x38EF7D);
+    } else if (g_recorder.parsed_score >= 6) {
+      desc_color = lv_color_hex(0xFFD93D);
+    } else if (g_recorder.parsed_score >= 4) {
+      desc_color = lv_color_hex(0xFFA726);
+    } else {
+      desc_color = lv_color_hex(0xFF6B6B);
+    }
+    lv_obj_set_style_text_color(g_recorder.analysis_score_desc, desc_color, LV_PART_MAIN);
+  }
+  
+  // Update pro card text
+  if (g_recorder.analysis_pro_text) {
+    lv_label_set_text(g_recorder.analysis_pro_text, g_recorder.parsed_pro);
+  }
+  
+  // Update con card text
+  if (g_recorder.analysis_con_text) {
+    lv_label_set_text(g_recorder.analysis_con_text, g_recorder.parsed_con);
+  }
+
+  lv_screen_load(g_recorder.analysis_result_screen);
+}
+
 static void show_playback_screen(int session_idx) {
   if (session_idx < 0 || session_idx >= g_recorder.session_count)
     return;
@@ -3585,6 +4117,7 @@ static void create_main_ui(void) {
   create_view_upload_screen();
   create_select_session_screen();
   create_select_sheet_screen();
+  create_analysis_result_screen();
   create_playback_screen();
 
   // Create loading overlay (appears on top of all screens)
@@ -3727,6 +4260,17 @@ void user_main(void) {
     PR_ERR("[TUYA] tuya_iot_start FAILED: %d", ret);
   } else {
     PR_NOTICE("[TUYA] tuya_iot_start OK");
+  }
+
+  // Initialize cloud-based voice assistant (replaces broken Tuya ASR)
+  // Uses Whisper for AI chat, button-triggered conversation
+  PR_NOTICE("[AI] Initializing cloud-based voice assistant...");
+  OPERATE_RET ai_rt = voice_assistant_init();
+  if (ai_rt != OPRT_OK) {
+    PR_ERR("[AI] voice_assistant_init FAILED: %d", ai_rt);
+  } else {
+    PR_NOTICE("[AI] voice_assistant_init OK - press button to start conversation");
+    coach_ui_on_status("Press button to start conversation");
   }
 
   PR_NOTICE("[MAIN] ========================================");
