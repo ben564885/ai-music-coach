@@ -46,11 +46,11 @@
 #define AUTH_KEY "dzVrgPGISjLsVkzmpjFTNYKWHM3GzIws" // REPLACE WITH YOUR AUTHKEY
 // =================================================================
 
-// IMPORTANT: This must be the IP of your computer on the phone's hotspot
-// network Connect your computer to the phone hotspot, then find its IP (e.g.,
-// 172.20.10.x) and update this value. The device and computer must be on the
-// same network.
-#define CLOUD_BACKEND_HOST "192.168.34.176"
+// IMPORTANT: This must be the IP of your computer on the Hackathon network
+// network Connect your computer to the Hackathon network, then find its IP
+// (e.g., 10.0.0.x) and update this value. The device and computer must be on
+// the same network.
+#define CLOUD_BACKEND_HOST "10.0.0.197"
 #define CLOUD_BACKEND_PORT 5001
 #define CLOUD_BACKEND_PATH "/api/firmware/upload"
 
@@ -106,6 +106,7 @@ typedef struct {
 typedef struct {
   TUYA_RINGBUFF_T pcm_ringbuf;
   BOOL_T is_recording;
+  BOOL_T is_uploading; // True when recording is being uploaded/processed
   uint32_t start_time;
   uint16_t peak_amplitude;
   screen_state_t current_screen;
@@ -175,6 +176,7 @@ typedef struct {
   lv_obj_t *sessions_list_cont;
   lv_obj_t *sessions_status_label;
   lv_obj_t *session_labels[MAX_SESSIONS];
+  lv_obj_t *sessions_blocking_overlay; // Blocks clicks during upload/processing
 
   // Uploads screen
   lv_obj_t *uploads_screen;
@@ -222,8 +224,8 @@ typedef struct {
 } recorder_mgr_t;
 
 // Hardcoded credentials for development
-#define USER_SSID "JJ Lake"
-#define USER_PASSWORD "20220315"
+#define USER_SSID "Hackathon"
+#define USER_PASSWORD "Adobe2000"
 
 static recorder_mgr_t g_recorder;
 static BOOL_T g_net_connected = FALSE;
@@ -247,6 +249,8 @@ static void fetch_sessions(void);
 static void fetch_uploads(void);
 static void analyze_last_recording(void);
 static void update_sessions_ui(void);
+static void show_sessions_blocking_overlay(void);
+static void hide_sessions_blocking_overlay(void);
 static void update_uploads_ui(void);
 static void create_uploads_screen(void);
 static void create_view_upload_screen(void);
@@ -428,10 +432,12 @@ static void manual_upload_recording(const char *filepath, size_t file_size,
   // Use the proper Tuya HTTP client interface
   http_client_response_t http_response = {0};
 
-  // Set up headers - Content-Type and X-User-ID
+  // Set up headers - Content-Type, X-User-ID, and Connection: close to ensure
+  // clean state
   http_client_header_t headers[] = {
       {.key = "Content-Type", .value = "audio/wav"},
-      {.key = "X-User-ID", .value = dev_id}};
+      {.key = "X-User-ID", .value = dev_id},
+      {.key = "Connection", .value = "close"}};
 
   // Calculate timeout: 30 seconds base + 1 second per 10KB
   uint32_t timeout_ms = 30000 + (file_size / 10240) * 1000;
@@ -450,7 +456,7 @@ static void manual_upload_recording(const char *filepath, size_t file_size,
           .cacert_len = 0,
           .method = "POST",
           .headers = headers,
-          .headers_count = sizeof(headers) / sizeof(http_client_header_t),
+          .headers_count = 3, // Content-Type, X-User-ID, Connection
           .body = file_buf,
           .body_length = file_size,
           .timeout_ms = timeout_ms},
@@ -557,6 +563,7 @@ static void save_recording(void) {
     if (g_recorder.status_label)
       lv_label_set_text(g_recorder.status_label, "Err: No WiFi");
     PR_ERR("Cannot upload: WiFi not connected (status: %d)", stat);
+    // Don't set is_uploading flag if we can't upload
     return;
   }
 
@@ -570,21 +577,36 @@ static void save_recording(void) {
   if (g_recorder.status_label)
     lv_label_set_text(g_recorder.status_label, "Uploading...");
 
+  // CRITICAL: Set uploading flag and show blocking overlay on sessions screen
+  g_recorder.is_uploading = TRUE;
+  if (g_recorder.current_screen == SCREEN_SESSIONS) {
+    show_sessions_blocking_overlay();
+  }
+
   // Build WAV file in memory (skip SD card entirely)
   uint32_t wav_size = WAV_HEAD_LEN + pcm_len;
 
-  // Allocate buffer for complete WAV file
-  uint8_t *wav_buf = tal_malloc(wav_size);
+  // Allocate buffer for complete WAV file - prefer PSRAM if available
+  uint8_t *wav_buf = NULL;
+  BOOL_T wav_buf_is_psram = FALSE;
 #if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM == 1)
-  void *psram_buf = tal_psram_malloc(wav_size);
-  if (psram_buf)
-    wav_buf = psram_buf;
+  wav_buf = tal_psram_malloc(wav_size);
+  if (wav_buf) {
+    wav_buf_is_psram = TRUE;
+  }
 #endif
+  // Fall back to regular malloc if PSRAM not available or allocation failed
+  if (!wav_buf) {
+    wav_buf = tal_malloc(wav_size);
+  }
 
   if (!wav_buf) {
     if (g_recorder.status_label)
       lv_label_set_text(g_recorder.status_label, "Err: No Memory");
     PR_ERR("Failed to allocate WAV buffer (%d bytes)", wav_size);
+    // Clear uploading flag if we failed before uploading
+    g_recorder.is_uploading = FALSE;
+    hide_sessions_blocking_overlay();
     return;
   }
 
@@ -602,12 +624,12 @@ static void save_recording(void) {
   // 3. Upload directly to backend (which saves to Supabase)
   manual_upload_recording(NULL, wav_size, wav_buf);
 
-  // 4. Cleanup
-#if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM == 1)
-  tal_psram_free(wav_buf);
-#else
-  tal_free(wav_buf);
-#endif
+  // 4. Cleanup - use correct free based on allocation source
+  if (wav_buf_is_psram) {
+    tal_psram_free(wav_buf);
+  } else {
+    tal_free(wav_buf);
+  }
 
   // 5. Increment recording count and return to main after delay
   g_recorder.recording_count++;
@@ -616,6 +638,11 @@ static void save_recording(void) {
   // This helps prevent "Download send/recv error" when immediately going to
   // sessions
   tal_system_sleep(2000); // Show upload status for 2 sec, then return to main
+
+  // CRITICAL: Keep is_uploading TRUE for longer to cover MIDI processing
+  // MIDI processing happens asynchronously on backend and can take 30+ seconds
+  // Don't clear the flag yet - it will be cleared after longer delay or when
+  // sessions are refreshed
 
   // Invalidate sessions cache so next fetch gets fresh data with new recording
   g_recorder.sessions_loaded = FALSE;
@@ -1337,6 +1364,12 @@ static void session_item_clicked_cb(lv_event_t *e) {
   if (index < 0 || index >= g_recorder.session_count)
     return;
 
+  // CRITICAL: Block clicks during upload/processing
+  if (g_recorder.is_uploading) {
+    PR_NOTICE("Blocked session click - upload/processing in progress");
+    return;
+  }
+
   PR_NOTICE("Session %d clicked: %s", index, g_recorder.sessions[index].title);
   PR_NOTICE("Audio URL: %s", g_recorder.sessions[index].audio_url);
 
@@ -1982,6 +2015,35 @@ static void create_sessions_screen(void) {
     lv_obj_align(g_recorder.session_labels[i], LV_ALIGN_LEFT_MID, 52, 0);
     lv_obj_set_width(g_recorder.session_labels[i], LV_PCT(75));
   }
+
+  // Create blocking overlay for sessions list (blocks clicks during
+  // upload/processing) Use lv_layer_top() to ensure it's ALWAYS on top of
+  // everything (like loading overlay) This overlay will be shown/hidden but
+  // always created on the top layer NOTE: We'll create it as a child of
+  // sessions_screen but move to foreground when shown Actually, let's create it
+  // on the sessions screen but ensure it's on top
+  g_recorder.sessions_blocking_overlay =
+      lv_obj_create(g_recorder.sessions_screen);
+  lv_obj_set_size(g_recorder.sessions_blocking_overlay, LV_PCT(100),
+                  LV_PCT(100));
+  lv_obj_align(g_recorder.sessions_blocking_overlay, LV_ALIGN_TOP_LEFT, 0, 0);
+  lv_obj_set_style_bg_color(g_recorder.sessions_blocking_overlay,
+                            lv_color_hex(0x000000), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.sessions_blocking_overlay, LV_OPA_80,
+                          LV_PART_MAIN); // Darker opacity (80%)
+  lv_obj_set_style_border_width(g_recorder.sessions_blocking_overlay, 0,
+                                LV_PART_MAIN);
+  lv_obj_set_style_pad_all(g_recorder.sessions_blocking_overlay, 0,
+                           LV_PART_MAIN);
+  lv_obj_add_flag(
+      g_recorder.sessions_blocking_overlay,
+      LV_OBJ_FLAG_CLICKABLE); // Block clicks - intercepts all click events
+  lv_obj_add_flag(g_recorder.sessions_blocking_overlay,
+                  LV_OBJ_FLAG_HIDDEN); // Hidden by default
+  lv_obj_clear_flag(g_recorder.sessions_blocking_overlay,
+                    LV_OBJ_FLAG_SCROLLABLE); // Don't scroll
+  // CRITICAL: Move to foreground IMMEDIATELY to ensure it's always on top
+  lv_obj_move_foreground(g_recorder.sessions_blocking_overlay);
 }
 
 static void update_sessions_ui(void) {
@@ -2008,6 +2070,15 @@ static void update_sessions_ui(void) {
   lv_label_set_text_fmt(g_recorder.sessions_status_label, "%d Recording%s",
                         g_recorder.session_count,
                         g_recorder.session_count == 1 ? "" : "s");
+
+  // CRITICAL: Clear is_uploading flag when sessions are successfully loaded
+  // This means MIDI processing is complete (or we have the latest data)
+  if (g_recorder.is_uploading && g_recorder.session_count > 0) {
+    PR_NOTICE("Sessions loaded - clearing is_uploading flag (MIDI processing "
+              "likely complete)");
+    g_recorder.is_uploading = FALSE;
+    hide_sessions_blocking_overlay();
+  }
 
   // Update visible items
   for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -3298,6 +3369,34 @@ static void show_analyze_screen(void) {
 static void show_sessions_screen(void) {
   g_recorder.current_screen = SCREEN_SESSIONS;
   lv_screen_load(g_recorder.sessions_screen);
+  // CRITICAL: Show/hide blocking overlay based on upload state
+  // Always check and update overlay state when showing sessions screen
+  if (g_recorder.is_uploading) {
+    show_sessions_blocking_overlay();
+  } else {
+    hide_sessions_blocking_overlay();
+  }
+}
+
+static void show_sessions_blocking_overlay(void) {
+  if (!g_recorder.sessions_blocking_overlay)
+    return;
+
+  // Always move to foreground first to ensure it's on top
+  lv_obj_move_foreground(g_recorder.sessions_blocking_overlay);
+  lv_obj_remove_flag(g_recorder.sessions_blocking_overlay, LV_OBJ_FLAG_HIDDEN);
+  // Force UI refresh to make overlay visible immediately
+  lv_refr_now(NULL);
+  PR_NOTICE(
+      "Sessions blocking overlay SHOWN (opacity=80%%, clickable, screen=%d)",
+      g_recorder.current_screen);
+}
+
+static void hide_sessions_blocking_overlay(void) {
+  if (g_recorder.sessions_blocking_overlay) {
+    lv_obj_add_flag(g_recorder.sessions_blocking_overlay, LV_OBJ_FLAG_HIDDEN);
+    PR_NOTICE("Sessions blocking overlay hidden");
+  }
 }
 
 static void show_uploads_screen(void) {
