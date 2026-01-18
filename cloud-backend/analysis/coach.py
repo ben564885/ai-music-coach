@@ -1022,6 +1022,198 @@ Keep your response concise (under 200 words) and encouraging. Focus on the most 
             traceback.print_exc()
             return f"Analysis error: {str(e)}"
 
+    def analyze_midi_vs_sheet(self, midi_url, musicxml_reference):
+        """
+        Analyze a MIDI performance against MusicXML sheet music using Gemini 2.5 Flash.
+        
+        Args:
+            midi_url: URL to the MIDI file in Supabase storage (midis bucket)
+            musicxml_reference: MusicXML string from sheet_music.audiveris_raw_output
+            
+        Returns:
+            JSON string containing structured feedback with score (0-100) and 6 feedback points.
+            Format: {"score": 85, "feedback_points": [{"text": "...", "is_important": true}, ...]}
+        """
+        if not self.model_flash:
+            default_feedback = {
+                "score": 50,
+                "strength": "Good effort attempting the piece!",
+                "improvement": "AI analysis not available - please configure API key.",
+                "feedback_points": [
+                    {"text": "Good effort attempting the piece.", "is_important": True},
+                    {"text": "AI analysis not available - Gemini API key not configured.", "is_important": True},
+                    {"text": "Please configure the API key to get detailed feedback.", "is_important": False},
+                    {"text": "Continue practicing regularly.", "is_important": False},
+                    {"text": "Focus on accuracy and timing.", "is_important": False},
+                    {"text": "Work on maintaining consistent tempo.", "is_important": False}
+                ]
+            }
+            return json.dumps(default_feedback)
+        
+        try:
+            # Download the MIDI file
+            print(f"DEBUG: Downloading MIDI from {midi_url}")
+            response = requests.get(midi_url, timeout=30)
+            response.raise_for_status()
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as temp_midi:
+                temp_midi.write(response.content)
+                temp_midi_path = temp_midi.name
+            
+            print(f"DEBUG: MIDI file downloaded, size: {len(response.content)} bytes")
+            
+            try:
+                # Upload MIDI file to Gemini
+                midi_file = genai.upload_file(temp_midi_path, mime_type='audio/midi')
+                
+                # Truncate MusicXML if too long (keep first 8000 chars for context)
+                musicxml_truncated = musicxml_reference[:8000] if musicxml_reference else "No reference available"
+                if len(musicxml_reference or '') > 8000:
+                    musicxml_truncated += "\n... [truncated]"
+                
+                prompt = f"""You are a music teacher analyzing a student's MIDI performance against sheet music.
+
+REFERENCE SHEET MUSIC (MusicXML):
+{musicxml_truncated}
+
+TASK: Compare the student's MIDI performance (attached) against the reference sheet music above.
+
+You MUST respond with a JSON object in this EXACT format:
+
+{{
+  "score": 85,
+  "strength": "Your rhythm and timing were excellent throughout the piece, showing good musical understanding.",
+  "improvement": "Work on the F# in measure 3 - you played F natural. Focus on reading accidentals carefully.",
+  "feedback_points": [
+    {{"text": "Excellent rhythm and timing throughout.", "is_important": true}},
+    {{"text": "Work on the F# in measure 3.", "is_important": true}},
+    {{"text": "Good dynamics in the middle section.", "is_important": true}},
+    {{"text": "Nice phrasing in measures 5-8.", "is_important": false}},
+    {{"text": "Consider working on finger technique.", "is_important": false}},
+    {{"text": "Overall tempo was consistent.", "is_important": false}}
+  ]
+}}
+
+REQUIREMENTS:
+1. score: Integer from 0-100 (81-100: excellent, 61-80: good, 41-60: decent, 21-40: needs work, 0-20: major difficulties)
+2. strength: ONE sentence describing the best aspect of their performance (what they did well)
+3. improvement: ONE sentence describing the most important thing to work on (specific and actionable)
+4. feedback_points: EXACTLY 6 feedback points for detailed view
+
+The "strength" and "improvement" fields are CRITICAL - they will be displayed on a small screen device.
+Keep them concise (under 100 characters each) but specific.
+
+Return ONLY valid JSON, no other text."""
+
+                # Use Gemini 2.5 Flash with JSON mode for structured output
+                generation_config = {"response_mime_type": "application/json"}
+                response = self.model_flash.generate_content(
+                    [midi_file, prompt],
+                    generation_config=generation_config
+                )
+                feedback_json = response.text.strip()
+                
+                # Parse and validate the JSON response
+                try:
+                    feedback_data = json.loads(feedback_json)
+                    
+                    # Validate structure
+                    if 'score' not in feedback_data:
+                        raise ValueError("Missing required score field")
+                    
+                    score = int(feedback_data['score'])
+                    if not (0 <= score <= 100):
+                        print(f"DEBUG: Score {score} out of range, clamping to 0-100")
+                        score = max(0, min(100, score))
+                        feedback_data['score'] = score
+                    
+                    # Ensure strength and improvement are present
+                    if 'strength' not in feedback_data or not feedback_data['strength']:
+                        feedback_data['strength'] = "Good effort on this performance!"
+                    if 'improvement' not in feedback_data or not feedback_data['improvement']:
+                        feedback_data['improvement'] = "Continue practicing to improve accuracy."
+                    
+                    # Handle feedback_points if present
+                    feedback_points = feedback_data.get('feedback_points', [])
+                    if len(feedback_points) < 6:
+                        print(f"DEBUG: Expected 6 feedback points, got {len(feedback_points)}, padding...")
+                        while len(feedback_points) < 6:
+                            feedback_points.append({"text": "Continue practicing regularly.", "is_important": False})
+                        feedback_data['feedback_points'] = feedback_points
+                    elif len(feedback_points) > 6:
+                        feedback_points = feedback_points[:6]
+                        feedback_data['feedback_points'] = feedback_points
+                    
+                    # Ensure exactly 3 are marked as important
+                    important_count = sum(1 for fp in feedback_points if fp.get('is_important', False))
+                    if important_count != 3:
+                        print(f"DEBUG: Expected 3 important points, got {important_count}, adjusting...")
+                        for i, fp in enumerate(feedback_points):
+                            fp['is_important'] = (i < 3)
+                    
+                    print(f"DEBUG: Gemini feedback generated - Score: {score}/100, strength: {feedback_data['strength'][:50]}...")
+                    return json.dumps(feedback_data)
+                    
+                except json.JSONDecodeError as e:
+                    print(f"DEBUG: Failed to parse JSON response: {e}")
+                    print(f"DEBUG: Raw response: {feedback_json[:500]}")
+                    # Return default structured response
+                    default_feedback = {
+                        "score": 50,
+                        "strength": "Good effort on this piece!",
+                        "improvement": "Continue practicing to improve accuracy.",
+                        "feedback_points": [
+                            {"text": "Good effort on this piece.", "is_important": True},
+                            {"text": "Continue practicing to improve accuracy.", "is_important": True},
+                            {"text": "Work on maintaining consistent tempo.", "is_important": True},
+                            {"text": "Focus on reading the sheet music carefully.", "is_important": False},
+                            {"text": "Practice difficult sections slowly.", "is_important": False},
+                            {"text": "Keep up the regular practice routine.", "is_important": False}
+                        ]
+                    }
+                    return json.dumps(default_feedback)
+                
+            finally:
+                # Cleanup temp file
+                if os.path.exists(temp_midi_path):
+                    os.unlink(temp_midi_path)
+                    
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading MIDI: {e}")
+            error_feedback = {
+                "score": 0,
+                "strength": "Recording uploaded successfully!",
+                "improvement": "Could not download MIDI file. Please try again.",
+                "feedback_points": [
+                    {"text": "Recording uploaded successfully.", "is_important": True},
+                    {"text": f"Could not download MIDI file for analysis: {str(e)[:80]}", "is_important": True},
+                    {"text": "Please try uploading again.", "is_important": True},
+                    {"text": "Check your internet connection.", "is_important": False},
+                    {"text": "Ensure the recording was processed correctly.", "is_important": False},
+                    {"text": "Contact support if the issue persists.", "is_important": False}
+                ]
+            }
+            return json.dumps(error_feedback)
+        except Exception as e:
+            print(f"Error in analyze_midi_vs_sheet: {e}")
+            import traceback
+            traceback.print_exc()
+            error_feedback = {
+                "score": 0,
+                "strength": "Recording uploaded successfully!",
+                "improvement": f"Analysis error occurred. Please try again.",
+                "feedback_points": [
+                    {"text": "Recording uploaded successfully.", "is_important": True},
+                    {"text": f"Analysis error: {str(e)[:80]}", "is_important": True},
+                    {"text": "Please try again later.", "is_important": True},
+                    {"text": "The system encountered an unexpected error.", "is_important": False},
+                    {"text": "Your recording is saved and can be analyzed later.", "is_important": False},
+                    {"text": "Contact support if the issue persists.", "is_important": False}
+                ]
+            }
+            return json.dumps(error_feedback)
+
     def generate_feedback(self, mistakes, reference_data, metadata):
         """
         Generate coaching feedback based on detected mistakes
@@ -1173,3 +1365,23 @@ Be conversational and supportive."""
             'mistakes_count': len(mistakes),
             'suggestions': self._extract_suggestions(mistakes)
         }
+    
+    def chat(self, user_message):
+        """
+        General chat method for voice assistant
+        Returns AI response as string
+        """
+        if not self.model:
+            return "I'm sorry, the AI service is not configured."
+        
+        try:
+            prompt = f"""You are a helpful music practice coach assistant. 
+The user is asking: {user_message}
+
+Provide a helpful, encouraging response. Keep it concise (1-2 sentences) for voice responses."""
+            
+            response = self.model_flash.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            print(f"Chat error: {e}")
+            return "I'm sorry, I encountered an error. Please try again."

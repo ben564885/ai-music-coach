@@ -55,7 +55,7 @@
 // network Connect your computer to the Hackathon network, then find its IP
 // (e.g., 10.0.0.x) and update this value. The device and computer must be on
 // the same network.
-#define CLOUD_BACKEND_HOST "192.168.34.95"
+#define CLOUD_BACKEND_HOST "10.0.0.146"
 #define CLOUD_BACKEND_PORT 5001
 #define CLOUD_BACKEND_PATH "/api/firmware/upload"
 
@@ -80,14 +80,37 @@ typedef enum {
   SCREEN_UPLOADS,
   SCREEN_VIEW_UPLOAD,
   SCREEN_PLAYBACK,
-  SCREEN_SELECT_SESSION, // For analyze - session selection
-  SCREEN_SELECT_SHEET,   // For analyze - sheet music selection
-  SCREEN_ANALYSIS_RESULT // Dedicated screen for analysis feedback
+  SCREEN_SELECT_SESSION,  // For analyze - session selection
+  SCREEN_SELECT_SHEET,    // For analyze - sheet music selection
+  SCREEN_ANALYSIS_RESULT, // Dedicated screen for analysis feedback
+  SCREEN_WIFI_CONFIG,     // WiFi configuration screen
+  SCREEN_SETTINGS,        // Settings menu screen
+  SCREEN_SAVED_NETWORKS   // Saved WiFi networks screen
 } screen_state_t;
 
 #define MAX_SESSIONS 5
 #define MAX_UPLOADS 5
 #define MAX_TITLE_LEN 32
+
+// WiFi Configuration constants
+#define MAX_WIFI_NETWORKS 20
+#define MAX_SSID_LEN 32
+#define MAX_PASSWORD_LEN 64
+
+typedef enum {
+  WIFI_STATE_DISCONNECTED,
+  WIFI_STATE_SCANNING,
+  WIFI_STATE_CONNECTING,
+  WIFI_STATE_CONNECTED,
+  WIFI_STATE_ERROR
+} wifi_state_t;
+
+typedef struct {
+  char ssid[MAX_SSID_LEN + 1];
+  int8_t rssi;
+  uint8_t channel;
+  uint8_t auth_mode;
+} wifi_network_t;
 
 typedef struct {
   char id[48];
@@ -203,21 +226,23 @@ typedef struct {
   // Analysis result screen (beautiful rating UI)
   lv_obj_t *analysis_result_screen;
   lv_obj_t *analysis_result_title;
-  lv_obj_t *analysis_score_arc;       // Circular score indicator
-  lv_obj_t *analysis_score_label;     // Large score number
-  lv_obj_t *analysis_score_desc;      // Score description (e.g., "Great!")
-  lv_obj_t *analysis_pro_card;        // Green card for main strength
+  lv_obj_t *analysis_score_arc;   // Circular score indicator
+  lv_obj_t *analysis_score_label; // Large score number
+  lv_obj_t *analysis_score_desc;  // Score description (e.g., "Great!")
+  lv_obj_t *analysis_pro_card;    // Green card for main strength
   lv_obj_t *analysis_pro_icon;
   lv_obj_t *analysis_pro_title;
   lv_obj_t *analysis_pro_text;
-  lv_obj_t *analysis_con_card;        // Red card for main weakness
+  lv_obj_t *analysis_con_card; // Red card for main weakness
   lv_obj_t *analysis_con_icon;
   lv_obj_t *analysis_con_title;
   lv_obj_t *analysis_con_text;
   lv_obj_t *analysis_done_btn;
-  
+
   // Parsed analysis data
   int parsed_score;
+  int score_anim_current;      // Current animated score value
+  lv_timer_t *score_anim_timer; // Timer for score animation
   char parsed_pro[512];
   char parsed_con[512];
 
@@ -246,11 +271,48 @@ typedef struct {
   BOOL_T download_cancelled;
 
   lv_timer_t *ui_timer;
-} recorder_mgr_t;
 
-// Hardcoded credentials for development
-#define USER_SSID "JJ Lake"
-#define USER_PASSWORD "20220315"
+  // Settings screen
+  lv_obj_t *settings_screen;
+
+  // Saved Networks screen
+  lv_obj_t *saved_networks_screen;
+  lv_obj_t *saved_networks_list;
+  lv_obj_t *saved_networks_empty_label;
+
+  // WiFi Configuration screen
+  lv_obj_t *wifi_config_screen;
+  lv_obj_t *wifi_status_label;
+  lv_obj_t *wifi_scan_btn;
+  lv_obj_t *wifi_scan_btn_label;
+  lv_obj_t *wifi_network_list;
+  lv_obj_t *wifi_checking_overlay;
+  lv_obj_t *wifi_checking_label;
+  lv_obj_t *wifi_popup;
+  lv_obj_t *wifi_popup_title;
+  lv_obj_t *wifi_password_input;
+  lv_obj_t *wifi_password_toggle_btn;
+  lv_obj_t *wifi_connect_btn;
+  lv_obj_t *wifi_close_btn;
+  lv_obj_t *wifi_keyboard;
+  BOOL_T wifi_password_visible;
+
+  // WiFi state
+  wifi_state_t wifi_state;
+  wifi_network_t wifi_networks[MAX_WIFI_NETWORKS];
+  uint32_t wifi_network_count;
+  uint32_t wifi_selected_network_idx;
+  char wifi_selected_ssid[MAX_SSID_LEN + 1];
+  char wifi_connected_ssid[MAX_SSID_LEN + 1];
+  char wifi_password[MAX_PASSWORD_LEN + 1];
+  BOOL_T wifi_configured;    // True if WiFi credentials are saved
+  BOOL_T wifi_cloud_checked; // True if we've checked cloud for WiFi credentials
+  BOOL_T wifi_needs_cloud_save;  // True if we need to save WiFi to cloud (after
+                                 // network is ready)
+  BOOL_T wifi_database_verified; // True if we've verified database has
+                                 // credentials (prevents using stale local KV)
+  uint32_t wifi_checking_start_time; // Time when we started checking for WiFi
+} recorder_mgr_t;
 
 static recorder_mgr_t g_recorder;
 static BOOL_T g_net_connected = FALSE;
@@ -363,11 +425,23 @@ static void show_playback_screen(int session_idx);
 static void show_select_session_screen(void);
 static void show_select_sheet_screen(void);
 static void show_analysis_result_screen(void);
+static void show_wifi_config_screen(BOOL_T show_checking);
+static void show_settings_screen(void);
+static void create_settings_screen(void);
+static void show_saved_networks_screen(void);
+static void create_saved_networks_screen(void);
+static void refresh_saved_networks_list(void);
 static void create_analysis_result_screen(void);
 // static void app_fs_init(void);  // SD card disabled
 static void app_audio_init(void);
 static void control_recording(BOOL_T start);
 static void ui_timer_cb(lv_timer_t *timer);
+static BOOL_T wifi_load_credentials(char *ssid, char *password);
+static void wifi_save_credentials(const char *ssid, const char *password);
+static BOOL_T wifi_load_credentials_from_cloud(char *ssid, char *password);
+static void wifi_save_credentials_to_cloud(const char *ssid,
+                                           const char *password);
+static void wifi_update_status_display(void);
 static void fetch_sessions(void);
 static void fetch_uploads(void);
 static void analyze_selected_recording(void);
@@ -444,6 +518,13 @@ static void app_event_handler(tuya_iot_client_t *client,
  */
 static VOID device_init(VOID) {
   PR_NOTICE("[INIT] Device Init - Starting...");
+
+  // Initialize WiFi configured state to FALSE (will be checked after KV storage
+  // is ready)
+  g_recorder.wifi_configured = FALSE;
+  g_recorder.wifi_cloud_checked = FALSE;
+  g_recorder.wifi_needs_cloud_save = FALSE;
+  g_recorder.wifi_database_verified = FALSE;
 
   // Debug LED Init - Turn ON
   PR_DEBUG("[INIT] Setting up debug LED (GPIO 28)");
@@ -638,7 +719,7 @@ static int _audio_frame_put(TKL_AUDIO_FRAME_INFO_T *pframe) {
   // Send to voice assistant (for wake word detection and chat)
   extern void voice_assistant_audio_callback(uint8_t *data, uint32_t len);
   voice_assistant_audio_callback((uint8_t *)pframe->pbuf, pframe->used_size);
-  
+
   // Also handle recording for practice sessions
   if (g_recorder.is_recording && g_recorder.pcm_ringbuf) {
     tuya_ring_buff_write(g_recorder.pcm_ringbuf, pframe->pbuf,
@@ -786,6 +867,33 @@ static void save_recording(void) {
 static void ui_timer_cb(lv_timer_t *timer) {
   (void)timer;
 
+  // WiFi Checking Timeout
+  if (g_recorder.current_screen == SCREEN_WIFI_CONFIG &&
+      g_recorder.wifi_checking_overlay &&
+      !lv_obj_has_flag(g_recorder.wifi_checking_overlay, LV_OBJ_FLAG_HIDDEN)) {
+    uint32_t now = tal_system_get_tick_count();
+    if (now - g_recorder.wifi_checking_start_time >
+        10000) { // 10 second timeout
+      PR_NOTICE("[WIFI] Checking timeout, showing manual config UI");
+      show_wifi_config_screen(FALSE);
+    }
+  }
+
+  // Check if we should switch from WiFi config to main screen after successful
+  // connection
+  static uint32_t wifi_connected_tick = 0;
+  if (g_recorder.current_screen == SCREEN_WIFI_CONFIG &&
+      g_recorder.wifi_state == WIFI_STATE_CONNECTED) {
+    wifi_connected_tick++;
+    // Switch to main screen after 2 seconds (40 ticks * 50ms = 2000ms)
+    if (wifi_connected_tick >= 40) {
+      show_main_screen();
+      wifi_connected_tick = 0;
+    }
+  } else {
+    wifi_connected_tick = 0;
+  }
+
   // Voice debug overlay refresh (~5 Hz)
   static uint32_t voice_dbg_tick = 0;
   if (++voice_dbg_tick % 4 == 0) { // 50ms * 4 = 200ms
@@ -794,99 +902,190 @@ static void ui_timer_cb(lv_timer_t *timer) {
     if (convo_on) {
       voice_assistant_debug_t dbg = {0};
       voice_assistant_get_debug(&dbg);
-      voice_debug_overlay_update(dbg.vad_status, dbg.silence_frames, dbg.ringbuf_used_bytes,
-                                 dbg.last_http_client_status, dbg.last_http_status_code);
+      voice_debug_overlay_update(
+          dbg.vad_status, dbg.silence_frames, dbg.ringbuf_used_bytes,
+          dbg.last_http_client_status, dbg.last_http_status_code);
     }
   }
 
   // Poll WiFi Status periodically (every ~1 sec = 20 ticks)
   static uint32_t poll_cnt = 0;
-  static uint32_t retry_delay = 0;
-  static BOOL_T needs_retry = FALSE;
+  static uint32_t connecting_timeout_cnt = 0;
+  static uint32_t error_confirm_cnt = 0;  // Require multiple error polls before declaring failure
 
   if (++poll_cnt % 20 == 0) {
-    if (g_recorder.wifi_label && g_recorder.current_screen == SCREEN_MAIN) {
-      WF_STATION_STAT_E stat = WSS_IDLE;
-      tal_wifi_station_get_status(&stat);
+    WF_STATION_STAT_E stat = WSS_IDLE;
+    tal_wifi_station_get_status(&stat);
 
-      if (stat == WSS_GOT_IP) {
+    // Connection timeout: if connecting for >15 seconds on WiFi config screen, show error
+    if (g_recorder.current_screen == SCREEN_WIFI_CONFIG &&
+        g_recorder.wifi_state == WIFI_STATE_CONNECTING) {
+      connecting_timeout_cnt++;
+      if (connecting_timeout_cnt >= 15) {  // 15 seconds
+        PR_ERR("[WIFI] Connection timeout after 15 seconds");
+        g_recorder.wifi_state = WIFI_STATE_ERROR;
+        wifi_update_status_display();
+        connecting_timeout_cnt = 0;
+        error_confirm_cnt = 0;
+      }
+    } else {
+      connecting_timeout_cnt = 0;
+    }
+
+    if (stat == WSS_GOT_IP) {
+      connecting_timeout_cnt = 0;  // Reset timeout on success
+      error_confirm_cnt = 0;  // Reset error counter on success
+      // Update wifi_state if we were connecting - handles case where callback didn't fire
+      if (g_recorder.wifi_state == WIFI_STATE_CONNECTING) {
+        PR_NOTICE("[WIFI] Polling detected WSS_GOT_IP while state was CONNECTING - updating state");
+        g_recorder.wifi_state = WIFI_STATE_CONNECTED;
+        g_recorder.wifi_configured = TRUE;
+
+        // Save credentials locally if we have them
+        if (g_recorder.wifi_selected_ssid[0] != '\0') {
+          PR_NOTICE("[WIFI] Saving credentials locally: SSID='%s'", g_recorder.wifi_selected_ssid);
+          wifi_save_credentials(g_recorder.wifi_selected_ssid, g_recorder.wifi_password);
+          strncpy(g_recorder.wifi_connected_ssid, g_recorder.wifi_selected_ssid, MAX_SSID_LEN);
+          g_recorder.wifi_needs_cloud_save = TRUE;
+        }
+
+        // Update UI on WiFi config screen
+        if (g_recorder.current_screen == SCREEN_WIFI_CONFIG) {
+          wifi_update_status_display();
+        }
+      }
+
+      if (g_recorder.current_screen == SCREEN_MAIN) {
         lv_label_set_text(g_recorder.wifi_label, LV_SYMBOL_WIFI " Connected");
         lv_obj_set_style_text_color(g_recorder.wifi_label,
                                     lv_color_hex(0x00FF00),
                                     LV_PART_MAIN); // Green
+      }
 
-        // Auto-fetch sessions when WiFi first connects
-        if (!g_net_connected && !g_recorder.sessions_loaded) {
-          PR_NOTICE("[WIFI] Just connected! Fetching sessions...");
-          g_net_connected = TRUE;
-          fetch_sessions();
-        }
+      // Auto-fetch sessions when WiFi first connects
+      if (!g_net_connected && !g_recorder.sessions_loaded) {
+        PR_NOTICE("[WIFI] Just connected! Fetching sessions...");
         g_net_connected = TRUE;
-        needs_retry = FALSE;
-        retry_delay = 0;
-      } else if (stat == WSS_CONNECTING) {
+        fetch_sessions();
+      }
+      g_net_connected = TRUE;
+
+      // Save WiFi credentials to cloud now that network is fully ready
+      if (g_recorder.wifi_needs_cloud_save) {
+        PR_NOTICE("[WIFI] Network ready (WSS_GOT_IP), saving WiFi "
+                  "credentials to cloud...");
+        PR_NOTICE("[WIFI] SSID='%s', Password length=%d",
+                  g_recorder.wifi_selected_ssid,
+                  (int)strlen(g_recorder.wifi_password));
+        wifi_save_credentials_to_cloud(g_recorder.wifi_selected_ssid,
+                                       g_recorder.wifi_password);
+        g_recorder.wifi_needs_cloud_save = FALSE;
+      }
+
+      // Check cloud for WiFi credentials after connection (one-time check)
+      // Only do this if we're NOT on the WiFi config screen (user might be
+      // configuring)
+      if (!g_recorder.wifi_cloud_checked && g_net_connected &&
+          g_recorder.current_screen != SCREEN_WIFI_CONFIG) {
+        PR_NOTICE("[WIFI] Checking cloud for saved WiFi network...");
+        char cloud_ssid[MAX_SSID_LEN + 1] = {0};
+        char cloud_password[MAX_PASSWORD_LEN + 1] = {0};
+        if (wifi_load_credentials_from_cloud(cloud_ssid, cloud_password)) {
+          PR_NOTICE("[WIFI] Found cloud credentials, updating local storage");
+          wifi_save_credentials(cloud_ssid, cloud_password);
+          strncpy(g_recorder.wifi_selected_ssid, cloud_ssid, MAX_SSID_LEN);
+          strncpy(g_recorder.wifi_password, cloud_password, MAX_PASSWORD_LEN);
+
+          // Set flag that database has credentials
+          const char *db_has_creds = "1";
+          tal_kv_set("wifi_db_verified", (const uint8_t *)db_has_creds,
+                     strlen(db_has_creds) + 1);
+          g_recorder.wifi_database_verified = TRUE;
+        } else {
+          PR_NOTICE("[WIFI] No cloud credentials found in database - that's OK, will save current credentials");
+          // Cloud is empty but we're connected - don't disconnect!
+          // The wifi_needs_cloud_save flag will trigger saving current credentials to cloud
+          g_recorder.wifi_database_verified = TRUE;
+        }
+        g_recorder.wifi_cloud_checked = TRUE;
+      }
+    } else if (stat == WSS_CONNECTING) {
+      error_confirm_cnt = 0;  // Reset error counter - still actively connecting
+      if (g_recorder.current_screen == SCREEN_MAIN) {
         lv_label_set_text(g_recorder.wifi_label,
                           LV_SYMBOL_WIFI " Connecting...");
         lv_obj_set_style_text_color(g_recorder.wifi_label,
                                     lv_color_hex(0xFFFF00),
                                     LV_PART_MAIN); // Yellow
-        g_net_connected = FALSE;
-      } else if (stat == WSS_PASSWD_WRONG) {
+      }
+      g_net_connected = FALSE;
+    } else if (stat == WSS_PASSWD_WRONG) {
+      if (g_recorder.current_screen == SCREEN_MAIN) {
         lv_label_set_text(g_recorder.wifi_label,
                           LV_SYMBOL_WARNING " Wrong Password");
         lv_obj_set_style_text_color(g_recorder.wifi_label,
                                     lv_color_hex(0xFF0000), LV_PART_MAIN);
-        g_net_connected = FALSE;
-      } else if (stat == WSS_NO_AP_FOUND) {
+      }
+      // Update wifi_state for WiFi config screen - require 3 consecutive error polls
+      if (g_recorder.wifi_state == WIFI_STATE_CONNECTING) {
+        error_confirm_cnt++;
+        PR_NOTICE("[WIFI] Wrong password status (%d/3)", error_confirm_cnt);
+        if (error_confirm_cnt >= 3) {
+          PR_ERR("[WIFI] Wrong password confirmed");
+          g_recorder.wifi_state = WIFI_STATE_ERROR;
+          error_confirm_cnt = 0;
+          if (g_recorder.current_screen == SCREEN_WIFI_CONFIG) {
+            wifi_update_status_display();
+          }
+        }
+      }
+      g_net_connected = FALSE;
+    } else if (stat == WSS_NO_AP_FOUND) {
+      if (g_recorder.current_screen == SCREEN_MAIN) {
         lv_label_set_text(g_recorder.wifi_label,
                           LV_SYMBOL_WARNING " No WiFi Found");
         lv_obj_set_style_text_color(g_recorder.wifi_label,
                                     lv_color_hex(0xFF0000), LV_PART_MAIN);
-        g_net_connected = FALSE;
-        needs_retry = TRUE;
-      } else if (stat == WSS_CONN_FAIL || stat == WSS_IDLE) {
-        // Auto-retry on connection failure or idle state
-        if (needs_retry || stat == WSS_CONN_FAIL) {
-          if (retry_delay == 0) {
-            // Immediately try to reconnect
-            PR_NOTICE("[WIFI] Connection failed/idle, retrying...");
-            lv_label_set_text(g_recorder.wifi_label,
-                              LV_SYMBOL_WIFI " Reconnecting...");
-            lv_obj_set_style_text_color(g_recorder.wifi_label,
-                                        lv_color_hex(0xFFFF00), LV_PART_MAIN);
-
-            // Trigger reconnection
-            netconn_wifi_info_t wifi_info = {0};
-            strcpy(wifi_info.ssid, USER_SSID);
-            strcpy(wifi_info.pswd, USER_PASSWORD);
-            netmgr_conn_set(NETCONN_WIFI, NETCONN_CMD_SSID_PSWD, &wifi_info);
-
-            retry_delay = 5; // Wait 5 seconds before next retry
-            needs_retry = FALSE;
-          } else {
-            retry_delay--;
-            char buf[32];
-            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " Retry in %ds...",
-                     retry_delay);
-            lv_label_set_text(g_recorder.wifi_label, buf);
-            lv_obj_set_style_text_color(g_recorder.wifi_label,
-                                        lv_color_hex(0xFFAA00), LV_PART_MAIN);
-          }
-        } else {
-          lv_label_set_text(g_recorder.wifi_label,
-                            LV_SYMBOL_WARNING " Connection Failed");
-          lv_obj_set_style_text_color(g_recorder.wifi_label,
-                                      lv_color_hex(0xFF0000), LV_PART_MAIN);
-          needs_retry = TRUE;
-        }
-        g_net_connected = FALSE;
-      } else {
-        lv_label_set_text(g_recorder.wifi_label,
-                          LV_SYMBOL_WIFI " Initializing...");
-        lv_obj_set_style_text_color(g_recorder.wifi_label,
-                                    lv_color_hex(0xFFFF00), LV_PART_MAIN);
-        g_net_connected = FALSE;
       }
+      // Update wifi_state for WiFi config screen - require 3 consecutive error polls
+      if (g_recorder.wifi_state == WIFI_STATE_CONNECTING) {
+        error_confirm_cnt++;
+        PR_NOTICE("[WIFI] Network not found status (%d/3)", error_confirm_cnt);
+        if (error_confirm_cnt >= 3) {
+          PR_ERR("[WIFI] Network not found confirmed");
+          g_recorder.wifi_state = WIFI_STATE_ERROR;
+          error_confirm_cnt = 0;
+          if (g_recorder.current_screen == SCREEN_WIFI_CONFIG) {
+            wifi_update_status_display();
+          }
+        }
+      }
+      g_net_connected = FALSE;
+      // Don't auto-retry - just note we're offline
+    } else if (stat == WSS_CONN_FAIL || stat == WSS_IDLE) {
+      // Update wifi_state for WiFi config screen - require 3 consecutive error polls
+      if (g_recorder.current_screen == SCREEN_WIFI_CONFIG &&
+          g_recorder.wifi_state == WIFI_STATE_CONNECTING &&
+          stat == WSS_CONN_FAIL) {
+        error_confirm_cnt++;
+        PR_NOTICE("[WIFI] Connection failed status (%d/3)", error_confirm_cnt);
+        if (error_confirm_cnt >= 3) {
+          PR_ERR("[WIFI] Connection failed confirmed");
+          g_recorder.wifi_state = WIFI_STATE_ERROR;
+          error_confirm_cnt = 0;
+          wifi_update_status_display();
+        }
+      }
+      // Just show offline status on main screen - no auto-retry
+      // User can reconnect via Settings > WiFi Configuration if needed
+      if (g_recorder.current_screen == SCREEN_MAIN &&
+          g_recorder.wifi_state == WIFI_STATE_CONNECTED) {
+        // Only update UI if we thought we were connected
+        lv_label_set_text(g_recorder.wifi_label, LV_SYMBOL_WIFI " Offline");
+        lv_obj_set_style_text_color(g_recorder.wifi_label,
+                                    lv_color_hex(0x888888), LV_PART_MAIN);
+      }
+      g_net_connected = FALSE;
     }
   }
 
@@ -1148,7 +1347,7 @@ static void fetch_sessions(void) {
 
 static void fetch_uploads(void) {
   char debug_msg[128];
-  
+
   if (!g_net_connected) {
     if (g_recorder.uploads_status_label) {
       lv_label_set_text(g_recorder.uploads_status_label, "ERR: No WiFi");
@@ -1184,7 +1383,8 @@ static void fetch_uploads(void) {
       &response);
 
   if (status != HTTP_CLIENT_SUCCESS || response.status_code != 200) {
-    snprintf(debug_msg, sizeof(debug_msg), "ERR: HTTP %d/%d", status, response.status_code);
+    snprintf(debug_msg, sizeof(debug_msg), "ERR: HTTP %d/%d", status,
+             response.status_code);
     if (g_recorder.uploads_status_label) {
       lv_label_set_text(g_recorder.uploads_status_label, debug_msg);
     }
@@ -1210,7 +1410,8 @@ static void fetch_uploads(void) {
           if (count > MAX_UPLOADS)
             count = MAX_UPLOADS;
 
-          PR_NOTICE("Found sheet_music array with %d items (max %d)", json_array_count, MAX_UPLOADS);
+          PR_NOTICE("Found sheet_music array with %d items (max %d)",
+                    json_array_count, MAX_UPLOADS);
 
           for (int i = 0; i < count; i++) {
             cJSON *upload = cJSON_GetArrayItem(uploads, i);
@@ -1224,8 +1425,9 @@ static void fetch_uploads(void) {
                   cJSON_GetObjectItem(upload, "audiveris_raw_output");
 
               // Debug logging
-              PR_NOTICE("Upload[%d]: id=%p (type=%d), title=%p (type=%d)", 
-                       i, id, id ? id->type : -1, title, title ? title->type : -1);
+              PR_NOTICE("Upload[%d]: id=%p (type=%d), title=%p (type=%d)", i,
+                        id, id ? id->type : -1, title,
+                        title ? title->type : -1);
               if (id) {
                 const char *id_str = cJSON_GetStringValue(id);
                 PR_NOTICE("  id string: %s", id_str ? id_str : "NULL");
@@ -1236,106 +1438,116 @@ static void fetch_uploads(void) {
               }
 
               if (id && title) {
-              strncpy(g_recorder.uploads[i].id,
-                      cJSON_GetStringValue(id) ? cJSON_GetStringValue(id) : "",
-                      sizeof(g_recorder.uploads[i].id) - 1);
-              strncpy(g_recorder.uploads[i].title,
-                      cJSON_GetStringValue(title) ? cJSON_GetStringValue(title)
-                                                  : "Untitled",
-                      sizeof(g_recorder.uploads[i].title) - 1);
-              if (created && cJSON_GetStringValue(created)) {
-                format_date_time(cJSON_GetStringValue(created),
-                                 g_recorder.uploads[i].date,
-                                 sizeof(g_recorder.uploads[i].date));
-              } else {
-                strncpy(g_recorder.uploads[i].date, "No date",
-                        sizeof(g_recorder.uploads[i].date));
-              }
-              // Store file URL
-              if (file_url && cJSON_GetStringValue(file_url)) {
-                strncpy(g_recorder.uploads[i].file_url,
-                        cJSON_GetStringValue(file_url),
-                        sizeof(g_recorder.uploads[i].file_url) - 1);
-              } else {
-                g_recorder.uploads[i].file_url[0] = '\0';
-              }
-
-              // Parse reference_data
-              g_recorder.uploads[i].note_count = 0;
-              strncpy(g_recorder.uploads[i].time_signature, "4/4",
-                      sizeof(g_recorder.uploads[i].time_signature) - 1);
-              strncpy(g_recorder.uploads[i].key_signature, "C",
-                      sizeof(g_recorder.uploads[i].key_signature) - 1);
-              g_recorder.uploads[i].clef[0] = '\0';
-              g_recorder.uploads[i].has_analysis = FALSE;
-
-              if (ref_data && cJSON_IsObject(ref_data)) {
-                // Parse time signature
-                cJSON *time_sig =
-                    cJSON_GetObjectItem(ref_data, "timeSignature");
-                if (!time_sig)
-                  time_sig = cJSON_GetObjectItem(ref_data, "time_signature");
-                if (time_sig && cJSON_GetStringValue(time_sig)) {
-                  strncpy(g_recorder.uploads[i].time_signature,
-                          cJSON_GetStringValue(time_sig),
-                          sizeof(g_recorder.uploads[i].time_signature) - 1);
-                }
-
-                // Parse key signature
-                cJSON *key_sig = cJSON_GetObjectItem(ref_data, "key_signature");
-                if (!key_sig)
-                  key_sig = cJSON_GetObjectItem(ref_data, "key");
-                if (key_sig && cJSON_GetStringValue(key_sig)) {
-                  const char *key = cJSON_GetStringValue(key_sig);
-                  char friendly_key[16] = {0};
-                  // Replace - with b (flat), + with # (sharp)
-                  int j = 0;
-                  for (int k = 0; key[k] && j < 15; k++) {
-                    if (key[k] == '-')
-                      friendly_key[j++] = 'b';
-                    else if (key[k] == '+')
-                      friendly_key[j++] = '#';
-                    else
-                      friendly_key[j++] = key[k];
-                  }
-                  friendly_key[j] = '\0';
-                  strncpy(g_recorder.uploads[i].key_signature, friendly_key,
-                          sizeof(g_recorder.uploads[i].key_signature) - 1);
-                }
-
-                // Parse note count - try direct note_count field first (lite response),
-                // then fall back to counting notes array (full response)
-                cJSON *note_count_field = cJSON_GetObjectItem(ref_data, "note_count");
-                if (note_count_field && cJSON_IsNumber(note_count_field)) {
-                  g_recorder.uploads[i].note_count = (int)cJSON_GetNumberValue(note_count_field);
+                strncpy(g_recorder.uploads[i].id,
+                        cJSON_GetStringValue(id) ? cJSON_GetStringValue(id)
+                                                 : "",
+                        sizeof(g_recorder.uploads[i].id) - 1);
+                strncpy(g_recorder.uploads[i].title,
+                        cJSON_GetStringValue(title)
+                            ? cJSON_GetStringValue(title)
+                            : "Untitled",
+                        sizeof(g_recorder.uploads[i].title) - 1);
+                if (created && cJSON_GetStringValue(created)) {
+                  format_date_time(cJSON_GetStringValue(created),
+                                   g_recorder.uploads[i].date,
+                                   sizeof(g_recorder.uploads[i].date));
                 } else {
-                  cJSON *notes = cJSON_GetObjectItem(ref_data, "notes");
-                  if (notes && cJSON_IsArray(notes)) {
-                    g_recorder.uploads[i].note_count = cJSON_GetArraySize(notes);
+                  strncpy(g_recorder.uploads[i].date, "No date",
+                          sizeof(g_recorder.uploads[i].date));
+                }
+                // Store file URL
+                if (file_url && cJSON_GetStringValue(file_url)) {
+                  strncpy(g_recorder.uploads[i].file_url,
+                          cJSON_GetStringValue(file_url),
+                          sizeof(g_recorder.uploads[i].file_url) - 1);
+                } else {
+                  g_recorder.uploads[i].file_url[0] = '\0';
+                }
+
+                // Parse reference_data
+                g_recorder.uploads[i].note_count = 0;
+                strncpy(g_recorder.uploads[i].time_signature, "4/4",
+                        sizeof(g_recorder.uploads[i].time_signature) - 1);
+                strncpy(g_recorder.uploads[i].key_signature, "C",
+                        sizeof(g_recorder.uploads[i].key_signature) - 1);
+                g_recorder.uploads[i].clef[0] = '\0';
+                g_recorder.uploads[i].has_analysis = FALSE;
+
+                if (ref_data && cJSON_IsObject(ref_data)) {
+                  // Parse time signature
+                  cJSON *time_sig =
+                      cJSON_GetObjectItem(ref_data, "timeSignature");
+                  if (!time_sig)
+                    time_sig = cJSON_GetObjectItem(ref_data, "time_signature");
+                  if (time_sig && cJSON_GetStringValue(time_sig)) {
+                    strncpy(g_recorder.uploads[i].time_signature,
+                            cJSON_GetStringValue(time_sig),
+                            sizeof(g_recorder.uploads[i].time_signature) - 1);
+                  }
+
+                  // Parse key signature
+                  cJSON *key_sig =
+                      cJSON_GetObjectItem(ref_data, "key_signature");
+                  if (!key_sig)
+                    key_sig = cJSON_GetObjectItem(ref_data, "key");
+                  if (key_sig && cJSON_GetStringValue(key_sig)) {
+                    const char *key = cJSON_GetStringValue(key_sig);
+                    char friendly_key[16] = {0};
+                    // Replace - with b (flat), + with # (sharp)
+                    int j = 0;
+                    for (int k = 0; key[k] && j < 15; k++) {
+                      if (key[k] == '-')
+                        friendly_key[j++] = 'b';
+                      else if (key[k] == '+')
+                        friendly_key[j++] = '#';
+                      else
+                        friendly_key[j++] = key[k];
+                    }
+                    friendly_key[j] = '\0';
+                    strncpy(g_recorder.uploads[i].key_signature, friendly_key,
+                            sizeof(g_recorder.uploads[i].key_signature) - 1);
+                  }
+
+                  // Parse note count - try direct note_count field first
+                  // (lite response), then fall back to counting notes array
+                  // (full response)
+                  cJSON *note_count_field =
+                      cJSON_GetObjectItem(ref_data, "note_count");
+                  if (note_count_field && cJSON_IsNumber(note_count_field)) {
+                    g_recorder.uploads[i].note_count =
+                        (int)cJSON_GetNumberValue(note_count_field);
+                  } else {
+                    cJSON *notes = cJSON_GetObjectItem(ref_data, "notes");
+                    if (notes && cJSON_IsArray(notes)) {
+                      g_recorder.uploads[i].note_count =
+                          cJSON_GetArraySize(notes);
+                    }
+                  }
+
+                  // Parse clef
+                  cJSON *clef = cJSON_GetObjectItem(ref_data, "clef");
+                  if (clef && cJSON_GetStringValue(clef)) {
+                    strncpy(g_recorder.uploads[i].clef,
+                            cJSON_GetStringValue(clef),
+                            sizeof(g_recorder.uploads[i].clef) - 1);
                   }
                 }
 
-                // Parse clef
-                cJSON *clef = cJSON_GetObjectItem(ref_data, "clef");
-                if (clef && cJSON_GetStringValue(clef)) {
-                  strncpy(g_recorder.uploads[i].clef,
-                          cJSON_GetStringValue(clef),
-                          sizeof(g_recorder.uploads[i].clef) - 1);
+                // Check if analyzed - try has_analysis bool first (lite
+                // response), then fall back to audiveris_raw_output string
+                // (full response)
+                cJSON *has_analysis_field =
+                    cJSON_GetObjectItem(upload, "has_analysis");
+                if (has_analysis_field && cJSON_IsBool(has_analysis_field)) {
+                  g_recorder.uploads[i].has_analysis =
+                      cJSON_IsTrue(has_analysis_field) ? TRUE : FALSE;
+                } else if (audiveris && cJSON_IsString(audiveris) &&
+                           cJSON_GetStringValue(audiveris) &&
+                           strlen(cJSON_GetStringValue(audiveris)) > 0) {
+                  g_recorder.uploads[i].has_analysis = TRUE;
                 }
-              }
 
-              // Check if analyzed - try has_analysis bool first (lite response),
-              // then fall back to audiveris_raw_output string (full response)
-              cJSON *has_analysis_field = cJSON_GetObjectItem(upload, "has_analysis");
-              if (has_analysis_field && cJSON_IsBool(has_analysis_field)) {
-                g_recorder.uploads[i].has_analysis = cJSON_IsTrue(has_analysis_field) ? TRUE : FALSE;
-              } else if (audiveris && cJSON_IsString(audiveris) &&
-                  cJSON_GetStringValue(audiveris) &&
-                  strlen(cJSON_GetStringValue(audiveris)) > 0) {
-                g_recorder.uploads[i].has_analysis = TRUE;
-              }
-
-              g_recorder.upload_count++;
+                g_recorder.upload_count++;
               }
             }
           }
@@ -1353,7 +1565,8 @@ static void fetch_uploads(void) {
     parse_fail_reason = 1; // no body
   }
 
-  // Store debug info for display - use last_http_code field to store array count
+  // Store debug info for display - use last_http_code field to store array
+  // count
   g_recorder.last_http_code = json_array_count;
   g_recorder.last_http_status = parse_fail_reason;
 
@@ -1372,8 +1585,7 @@ static void analyze_selected_recording(void) {
   // Check that both session and sheet music are selected
   if (g_recorder.selected_session_idx < 0 ||
       g_recorder.selected_session_idx >= g_recorder.session_count) {
-    strncpy(g_recorder.analyze_feedback,
-            "Please select a recording first.",
+    strncpy(g_recorder.analyze_feedback, "Please select a recording first.",
             sizeof(g_recorder.analyze_feedback));
     g_recorder.is_analyzing = FALSE;
     return;
@@ -1381,20 +1593,32 @@ static void analyze_selected_recording(void) {
 
   if (g_recorder.selected_upload_idx < 0 ||
       g_recorder.selected_upload_idx >= g_recorder.upload_count) {
-    strncpy(g_recorder.analyze_feedback,
-            "Please select sheet music first.",
+    strncpy(g_recorder.analyze_feedback, "Please select sheet music first.",
             sizeof(g_recorder.analyze_feedback));
     g_recorder.is_analyzing = FALSE;
     return;
   }
 
-  const char *recording_id = g_recorder.sessions[g_recorder.selected_session_idx].id;
-  const char *sheet_music_id = g_recorder.uploads[g_recorder.selected_upload_idx].id;
+  const char *recording_id =
+      g_recorder.sessions[g_recorder.selected_session_idx].id;
+  const char *sheet_music_id =
+      g_recorder.uploads[g_recorder.selected_upload_idx].id;
 
   PR_NOTICE("Analyzing recording %s vs sheet %s", recording_id, sheet_music_id);
   g_recorder.is_analyzing = TRUE;
   strncpy(g_recorder.analyze_feedback, "Analyzing with AI...",
           sizeof(g_recorder.analyze_feedback));
+
+  // Initialize parsed values with defaults
+  g_recorder.parsed_score = 0;
+  strncpy(g_recorder.parsed_pro, "Good effort overall!",
+          sizeof(g_recorder.parsed_pro) - 1);
+  strncpy(g_recorder.parsed_con, "Keep practicing!",
+          sizeof(g_recorder.parsed_con) - 1);
+
+  // Show loading overlay BEFORE making HTTP request
+  show_loading_overlay("Analyzing with AI...");
+  lv_refr_now(NULL); // Force immediate UI refresh
 
   // Get device ID - ALWAYS use hardcoded UUID (tuya_iot_devid_get returns
   // garbage)
@@ -1403,8 +1627,8 @@ static void analyze_selected_recording(void) {
   // Build request body with selected recording and sheet music IDs
   char body[256];
   snprintf(body, sizeof(body),
-           "{\"recording_id\":\"%s\",\"sheet_music_id\":\"%s\"}",
-           recording_id, sheet_music_id);
+           "{\"recording_id\":\"%s\",\"sheet_music_id\":\"%s\"}", recording_id,
+           sheet_music_id);
 
   http_client_response_t response = {0};
   http_client_header_t headers[] = {
@@ -1412,6 +1636,7 @@ static void analyze_selected_recording(void) {
       {.key = "X-User-ID", .value = dev_id},
       {.key = "Connection", .value = "close"}};
 
+  // Step 1: Start analysis (quick response with analysis_id)
   http_client_status_t status = http_client_request(
       &(const http_client_request_t){
           .host = CLOUD_BACKEND_HOST,
@@ -1424,54 +1649,161 @@ static void analyze_selected_recording(void) {
           .headers_count = 3,
           .body = (uint8_t *)body,
           .body_length = strlen(body),
-          .timeout_ms = 60000 // 60 sec for AI analysis
+          .timeout_ms = 10000 // 10 sec - just to start the analysis
       },
       &response);
 
-  g_recorder.is_analyzing = FALSE;
+  PR_NOTICE("[ANALYZE] Start request returned, status=%d", status);
 
-  if (status != HTTP_CLIENT_SUCCESS) {
+  if (status != HTTP_CLIENT_SUCCESS || response.status_code != 200) {
+    g_recorder.is_analyzing = FALSE;
+    hide_loading_overlay();
+    PR_ERR("[ANALYZE] Failed to start analysis: status=%d, http=%d", status, response.status_code);
     snprintf(g_recorder.analyze_feedback, sizeof(g_recorder.analyze_feedback),
-             "Request failed: %d", status);
+             "Connection error: %d", status);
+    snprintf(g_recorder.parsed_pro, sizeof(g_recorder.parsed_pro),
+             "HTTP failed: status %d", status);
+    strncpy(g_recorder.parsed_con, "Check network connection",
+            sizeof(g_recorder.parsed_con) - 1);
     http_client_free(&response);
-    update_analyze_ui();
+    show_analysis_result_screen();
     lv_timer_handler();
     return;
   }
 
-  if (response.status_code != 200) {
-    snprintf(g_recorder.analyze_feedback, sizeof(g_recorder.analyze_feedback),
-             "Server error: %d", response.status_code);
-    http_client_free(&response);
-    update_analyze_ui();
-    lv_timer_handler();
-    return;
-  }
-
-  // Parse response
+  // Parse analysis_id from response
+  char analysis_id[64] = {0};
   if (response.body && response.body_length > 0) {
     cJSON *root = cJSON_Parse((char *)response.body);
     if (root) {
-      cJSON *feedback = cJSON_GetObjectItem(root, "feedback");
-      if (feedback && cJSON_GetStringValue(feedback)) {
-        strncpy(g_recorder.analyze_feedback, cJSON_GetStringValue(feedback),
-                sizeof(g_recorder.analyze_feedback) - 1);
-      } else {
-        strncpy(g_recorder.analyze_feedback, "Analysis complete!",
-                sizeof(g_recorder.analyze_feedback));
+      cJSON *id_item = cJSON_GetObjectItem(root, "analysis_id");
+      if (id_item && cJSON_IsString(id_item)) {
+        strncpy(analysis_id, cJSON_GetStringValue(id_item), sizeof(analysis_id) - 1);
+        PR_NOTICE("[ANALYZE] Got analysis_id: %s", analysis_id);
       }
       cJSON_Delete(root);
-    } else {
-      strncpy(g_recorder.analyze_feedback, "Failed to parse response",
-              sizeof(g_recorder.analyze_feedback));
     }
   }
-
-  PR_NOTICE("Analysis complete: %s", g_recorder.analyze_feedback);
   http_client_free(&response);
+
+  if (strlen(analysis_id) == 0) {
+    g_recorder.is_analyzing = FALSE;
+    hide_loading_overlay();
+    PR_ERR("[ANALYZE] No analysis_id in response");
+    strncpy(g_recorder.parsed_pro, "Server error - no analysis ID",
+            sizeof(g_recorder.parsed_pro) - 1);
+    strncpy(g_recorder.parsed_con, "Try again",
+            sizeof(g_recorder.parsed_con) - 1);
+    show_analysis_result_screen();
+    lv_timer_handler();
+    return;
+  }
+
+  // Step 2: Poll for results (up to 60 seconds, every 2 seconds)
+  char poll_path[128];
+  snprintf(poll_path, sizeof(poll_path), "/api/device/analyze/%s", analysis_id);
   
+  http_client_header_t poll_headers[] = {
+      {.key = "Content-Type", .value = "application/json"},
+      {.key = "X-User-ID", .value = dev_id}};
+
+  int poll_count = 0;
+  int max_polls = 30; // 30 polls * 2 sec = 60 seconds max
+  BOOL_T got_result = FALSE;
+
+  while (poll_count < max_polls && !got_result) {
+    poll_count++;
+    PR_NOTICE("[ANALYZE] Polling for results, attempt %d/%d", poll_count, max_polls);
+    
+    // Update loading text
+    char loading_msg[64];
+    snprintf(loading_msg, sizeof(loading_msg), "Analyzing... (%d sec)", poll_count * 2);
+    if (g_recorder.loading_label) {
+      lv_label_set_text(g_recorder.loading_label, loading_msg);
+      lv_timer_handler();
+    }
+
+    // Wait 2 seconds before polling
+    tal_system_sleep(2000);
+
+    memset(&response, 0, sizeof(response));
+    status = http_client_request(
+        &(const http_client_request_t){
+            .host = CLOUD_BACKEND_HOST,
+            .port = CLOUD_BACKEND_PORT,
+            .path = poll_path,
+            .cacert = NULL,
+            .cacert_len = 0,
+            .method = "GET",
+            .headers = poll_headers,
+            .headers_count = 2,
+            .body = NULL,
+            .body_length = 0,
+            .timeout_ms = 5000 // 5 sec timeout for poll
+        },
+        &response);
+
+    if (status != HTTP_CLIENT_SUCCESS) {
+      PR_ERR("[ANALYZE] Poll request failed: %d", status);
+      http_client_free(&response);
+      continue; // Try again
+    }
+
+    if (response.status_code == 200 && response.body && response.body_length > 0) {
+      cJSON *root = cJSON_Parse((char *)response.body);
+      if (root) {
+        cJSON *status_item = cJSON_GetObjectItem(root, "status");
+        const char *status_str = status_item ? cJSON_GetStringValue(status_item) : NULL;
+        
+        if (status_str && strcmp(status_str, "complete") == 0) {
+          PR_NOTICE("[ANALYZE] Got complete result!");
+          got_result = TRUE;
+          
+          // Parse the results
+          cJSON *score_item = cJSON_GetObjectItem(root, "score");
+          if (score_item && cJSON_IsNumber(score_item)) {
+            g_recorder.parsed_score = score_item->valueint;
+            PR_NOTICE("[ANALYZE] Score: %d", g_recorder.parsed_score);
+          }
+          
+          cJSON *strength_item = cJSON_GetObjectItem(root, "strength");
+          if (strength_item && cJSON_IsString(strength_item)) {
+            strncpy(g_recorder.parsed_pro, cJSON_GetStringValue(strength_item),
+                    sizeof(g_recorder.parsed_pro) - 1);
+          }
+          
+          cJSON *improvement_item = cJSON_GetObjectItem(root, "improvement");
+          if (improvement_item && cJSON_IsString(improvement_item)) {
+            strncpy(g_recorder.parsed_con, cJSON_GetStringValue(improvement_item),
+                    sizeof(g_recorder.parsed_con) - 1);
+          }
+        } else {
+          PR_NOTICE("[ANALYZE] Status: %s, continuing to poll...", status_str ? status_str : "null");
+        }
+        cJSON_Delete(root);
+      }
+    }
+    http_client_free(&response);
+  }
+
+  g_recorder.is_analyzing = FALSE;
+  hide_loading_overlay();
+
+  if (!got_result) {
+    PR_ERR("[ANALYZE] Timed out waiting for results");
+    strncpy(g_recorder.parsed_pro, "Analysis timed out",
+            sizeof(g_recorder.parsed_pro) - 1);
+    strncpy(g_recorder.parsed_con, "Try again later",
+            sizeof(g_recorder.parsed_con) - 1);
+  }
+
+  PR_NOTICE("[ANALYZE] Final: score=%d, pro=%.30s, con=%.30s", 
+            g_recorder.parsed_score, g_recorder.parsed_pro, g_recorder.parsed_con);
+
   // Navigate to dedicated analysis result screen
+  PR_NOTICE("[ANALYZE] Calling show_analysis_result_screen()");
   show_analysis_result_screen();
+  PR_NOTICE("[ANALYZE] Screen loaded, refreshing display");
   lv_timer_handler();
 }
 
@@ -1684,6 +2016,12 @@ static lv_obj_t *create_back_button(lv_obj_t *parent) {
 // MAIN SCREEN (3 Buttons)
 // =================================================================
 
+static void btn_settings_cb(lv_event_t *e) {
+  (void)e;
+  PR_NOTICE("[UI] Settings button clicked");
+  show_settings_screen();
+}
+
 static void create_main_screen(void) {
   g_recorder.main_screen = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(g_recorder.main_screen, lv_color_hex(0x1a1a2e),
@@ -1708,6 +2046,21 @@ static void create_main_screen(void) {
   lv_obj_set_style_text_color(g_recorder.greeting_label, lv_color_hex(0xffffff),
                               LV_PART_MAIN);
   lv_obj_set_style_pad_bottom(g_recorder.greeting_label, 8, LV_PART_MAIN);
+
+  // WiFi Config Button (Gear Icon) - Top Right
+  lv_obj_t *conf_btn = lv_button_create(g_recorder.main_screen);
+  lv_obj_set_size(conf_btn, 40, 40);
+  lv_obj_align(conf_btn, LV_ALIGN_TOP_RIGHT, -10, 10);
+  lv_obj_set_style_bg_color(conf_btn, lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(conf_btn, 0, LV_PART_MAIN); // Transparent background
+  lv_obj_set_style_shadow_width(conf_btn, 0, LV_PART_MAIN);
+  lv_obj_add_event_cb(conf_btn, btn_settings_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *conf_icon = lv_label_create(conf_btn);
+  lv_label_set_text(conf_icon, LV_SYMBOL_SETTINGS);
+  lv_obj_set_style_text_font(conf_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(conf_icon, lv_color_hex(0x94A3B8), LV_PART_MAIN);
+  lv_obj_center(conf_icon);
 
   // WiFi Status
   g_recorder.wifi_label = lv_label_create(cont);
@@ -1918,10 +2271,10 @@ static void create_analyze_screen(void) {
 
   g_recorder.analyze_session_title_label = lv_label_create(session_text_cont);
   lv_label_set_text(g_recorder.analyze_session_title_label, "Select Session");
-  lv_obj_set_style_text_color(g_recorder.analyze_session_title_label, lv_color_hex(0xffffff),
-                              LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analyze_session_title_label, &lv_font_montserrat_16,
-                             LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analyze_session_title_label,
+                              lv_color_hex(0xffffff), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analyze_session_title_label,
+                             &lv_font_montserrat_16, LV_PART_MAIN);
 
   // ===== Button 2: Select Sheet Music =====
   g_recorder.analyze_sheet_btn = lv_button_create(main_cont);
@@ -1975,9 +2328,10 @@ static void create_analyze_screen(void) {
 
   g_recorder.analyze_sheet_title_label = lv_label_create(sheet_text_cont);
   lv_label_set_text(g_recorder.analyze_sheet_title_label, "Select Sheet Music");
-  lv_obj_set_style_text_color(g_recorder.analyze_sheet_title_label, lv_color_hex(0xffffff),
-                              LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analyze_sheet_title_label, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analyze_sheet_title_label,
+                              lv_color_hex(0xffffff), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analyze_sheet_title_label,
+                             &lv_font_montserrat_16, LV_PART_MAIN);
 
   // ===== Analyze Button (disabled until both selected) =====
   g_recorder.analyze_btn = lv_button_create(main_cont);
@@ -2034,10 +2388,12 @@ static void update_analyze_ui(void) {
   if (g_recorder.analyze_session_title_label) {
     if (g_recorder.selected_session_idx >= 0 &&
         g_recorder.selected_session_idx < g_recorder.session_count) {
-      lv_label_set_text(g_recorder.analyze_session_title_label,
-                        g_recorder.sessions[g_recorder.selected_session_idx].title);
+      lv_label_set_text(
+          g_recorder.analyze_session_title_label,
+          g_recorder.sessions[g_recorder.selected_session_idx].title);
     } else {
-      lv_label_set_text(g_recorder.analyze_session_title_label, "Select Session");
+      lv_label_set_text(g_recorder.analyze_session_title_label,
+                        "Select Session");
     }
   }
 
@@ -2045,10 +2401,12 @@ static void update_analyze_ui(void) {
   if (g_recorder.analyze_sheet_title_label) {
     if (g_recorder.selected_upload_idx >= 0 &&
         g_recorder.selected_upload_idx < g_recorder.upload_count) {
-      lv_label_set_text(g_recorder.analyze_sheet_title_label,
-                        g_recorder.uploads[g_recorder.selected_upload_idx].title);
+      lv_label_set_text(
+          g_recorder.analyze_sheet_title_label,
+          g_recorder.uploads[g_recorder.selected_upload_idx].title);
     } else {
-      lv_label_set_text(g_recorder.analyze_sheet_title_label, "Select Sheet Music");
+      lv_label_set_text(g_recorder.analyze_sheet_title_label,
+                        "Select Sheet Music");
     }
   }
 
@@ -2183,8 +2541,8 @@ static void create_sessions_screen(void) {
   // upload/processing) Use lv_layer_top() to ensure it's ALWAYS on top of
   // everything (like loading overlay) This overlay will be shown/hidden but
   // always created on the top layer NOTE: We'll create it as a child of
-  // sessions_screen but move to foreground when shown Actually, let's create it
-  // on the sessions screen but ensure it's on top
+  // sessions_screen but move to foreground when shown Actually, let's create
+  // it on the sessions screen but ensure it's on top
   g_recorder.sessions_blocking_overlay =
       lv_obj_create(g_recorder.sessions_screen);
   lv_obj_set_size(g_recorder.sessions_blocking_overlay, LV_PCT(100),
@@ -2383,7 +2741,7 @@ static void update_uploads_ui(void) {
     // Show detailed debug: arr=server items, err=parse fail reason
     // err: 0=ok, 1=no body, 2=JSON fail, 3=no key, 4=not array
     snprintf(debug_msg, sizeof(debug_msg), "0 parsed, arr=%d, err=%d",
-             g_recorder.last_http_code,   // json_array_count
+             g_recorder.last_http_code,    // json_array_count
              g_recorder.last_http_status); // parse_fail_reason
     lv_label_set_text(g_recorder.uploads_status_label, debug_msg);
     // Hide all items
@@ -2479,80 +2837,104 @@ static void btn_analysis_done_cb(lv_event_t *e) {
 
 static void create_analysis_result_screen(void) {
   g_recorder.analysis_result_screen = lv_obj_create(NULL);
-  
+
   // Deep navy gradient background
   lv_obj_set_style_bg_color(g_recorder.analysis_result_screen,
                             lv_color_hex(0x0a0a14), LV_PART_MAIN);
   lv_obj_set_style_bg_grad_color(g_recorder.analysis_result_screen,
-                                  lv_color_hex(0x1a1a2e), LV_PART_MAIN);
-  lv_obj_set_style_bg_grad_dir(g_recorder.analysis_result_screen, LV_GRAD_DIR_VER, LV_PART_MAIN);
+                                 lv_color_hex(0x1a1a2e), LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_dir(g_recorder.analysis_result_screen,
+                               LV_GRAD_DIR_VER, LV_PART_MAIN);
 
   // Back button (top left)
   lv_obj_t *back_btn = create_back_button(g_recorder.analysis_result_screen);
   lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 12, 12);
-  lv_obj_add_event_cb(back_btn, btn_analysis_result_back_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(back_btn, btn_analysis_result_back_cb, LV_EVENT_CLICKED,
+                      NULL);
 
   // =================================================================
   // SCORE ARC - Large circular progress indicator
   // =================================================================
-  g_recorder.analysis_score_arc = lv_arc_create(g_recorder.analysis_result_screen);
+  g_recorder.analysis_score_arc =
+      lv_arc_create(g_recorder.analysis_result_screen);
   lv_obj_set_size(g_recorder.analysis_score_arc, 140, 140);
   lv_obj_align(g_recorder.analysis_score_arc, LV_ALIGN_TOP_MID, 0, 55);
   lv_arc_set_rotation(g_recorder.analysis_score_arc, 135);
   lv_arc_set_bg_angles(g_recorder.analysis_score_arc, 0, 270);
-  lv_arc_set_range(g_recorder.analysis_score_arc, 0, 10);
+  lv_arc_set_range(g_recorder.analysis_score_arc, 0, 100);
   lv_arc_set_value(g_recorder.analysis_score_arc, 0);
-  
+
   // Arc styling - glowing effect
   lv_obj_set_style_arc_width(g_recorder.analysis_score_arc, 12, LV_PART_MAIN);
-  lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, lv_color_hex(0x2a2a3d), LV_PART_MAIN);
-  lv_obj_set_style_arc_width(g_recorder.analysis_score_arc, 12, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, lv_color_hex(0x38EF7D), LV_PART_INDICATOR);
-  lv_obj_set_style_arc_rounded(g_recorder.analysis_score_arc, true, LV_PART_INDICATOR);
-  lv_obj_remove_style(g_recorder.analysis_score_arc, NULL, LV_PART_KNOB); // Hide knob
+  lv_obj_set_style_arc_color(g_recorder.analysis_score_arc,
+                             lv_color_hex(0x2a2a3d), LV_PART_MAIN);
+  lv_obj_set_style_arc_width(g_recorder.analysis_score_arc, 12,
+                             LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(g_recorder.analysis_score_arc,
+                             lv_color_hex(0x38EF7D), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_rounded(g_recorder.analysis_score_arc, true,
+                               LV_PART_INDICATOR);
+  lv_obj_remove_style(g_recorder.analysis_score_arc, NULL,
+                      LV_PART_KNOB); // Hide knob
 
   // Score number (inside arc)
-  g_recorder.analysis_score_label = lv_label_create(g_recorder.analysis_result_screen);
+  g_recorder.analysis_score_label =
+      lv_label_create(g_recorder.analysis_result_screen);
   lv_label_set_text(g_recorder.analysis_score_label, "0");
   lv_obj_align(g_recorder.analysis_score_label, LV_ALIGN_TOP_MID, 0, 100);
-  lv_obj_set_style_text_font(g_recorder.analysis_score_label, &lv_font_montserrat_24, LV_PART_MAIN);
-  lv_obj_set_style_text_color(g_recorder.analysis_score_label, lv_color_hex(0xffffff), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_score_label,
+                             &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_score_label,
+                              lv_color_hex(0xffffff), LV_PART_MAIN);
 
   // Score description (below number, inside arc)
-  g_recorder.analysis_score_desc = lv_label_create(g_recorder.analysis_result_screen);
-  lv_label_set_text(g_recorder.analysis_score_desc, "out of 10");
+  g_recorder.analysis_score_desc =
+      lv_label_create(g_recorder.analysis_result_screen);
+  lv_label_set_text(g_recorder.analysis_score_desc, "out of 100");
   lv_obj_align(g_recorder.analysis_score_desc, LV_ALIGN_TOP_MID, 0, 150);
-  lv_obj_set_style_text_font(g_recorder.analysis_score_desc, &lv_font_montserrat_14, LV_PART_MAIN);
-  lv_obj_set_style_text_color(g_recorder.analysis_score_desc, lv_color_hex(0x888899), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_score_desc,
+                             &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_score_desc,
+                              lv_color_hex(0x888899), LV_PART_MAIN);
 
   // =================================================================
   // PRO CARD - Main Strength (Green accent)
   // =================================================================
-  g_recorder.analysis_pro_card = lv_obj_create(g_recorder.analysis_result_screen);
+  g_recorder.analysis_pro_card =
+      lv_obj_create(g_recorder.analysis_result_screen);
   lv_obj_set_size(g_recorder.analysis_pro_card, LV_PCT(90), 90);
   lv_obj_align(g_recorder.analysis_pro_card, LV_ALIGN_TOP_MID, 0, 210);
-  lv_obj_set_style_bg_color(g_recorder.analysis_pro_card, lv_color_hex(0x38EF7D), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(g_recorder.analysis_pro_card, LV_OPA_10, LV_PART_MAIN);
-  lv_obj_set_style_border_color(g_recorder.analysis_pro_card, lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(g_recorder.analysis_pro_card,
+                            lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.analysis_pro_card, LV_OPA_10,
+                          LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.analysis_pro_card,
+                                lv_color_hex(0x38EF7D), LV_PART_MAIN);
   lv_obj_set_style_border_width(g_recorder.analysis_pro_card, 2, LV_PART_MAIN);
-  lv_obj_set_style_border_opa(g_recorder.analysis_pro_card, LV_OPA_60, LV_PART_MAIN);
+  lv_obj_set_style_border_opa(g_recorder.analysis_pro_card, LV_OPA_60,
+                              LV_PART_MAIN);
   lv_obj_set_style_radius(g_recorder.analysis_pro_card, 16, LV_PART_MAIN);
   lv_obj_set_style_pad_all(g_recorder.analysis_pro_card, 12, LV_PART_MAIN);
-  lv_obj_set_scrollbar_mode(g_recorder.analysis_pro_card, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_scrollbar_mode(g_recorder.analysis_pro_card,
+                            LV_SCROLLBAR_MODE_OFF);
 
   // Pro icon (star)
   g_recorder.analysis_pro_icon = lv_label_create(g_recorder.analysis_pro_card);
   lv_label_set_text(g_recorder.analysis_pro_icon, LV_SYMBOL_OK);
   lv_obj_align(g_recorder.analysis_pro_icon, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_obj_set_style_text_color(g_recorder.analysis_pro_icon, lv_color_hex(0x38EF7D), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analysis_pro_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_pro_icon,
+                              lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_pro_icon,
+                             &lv_font_montserrat_24, LV_PART_MAIN);
 
   // Pro title
   g_recorder.analysis_pro_title = lv_label_create(g_recorder.analysis_pro_card);
   lv_label_set_text(g_recorder.analysis_pro_title, "Main Strength");
   lv_obj_align(g_recorder.analysis_pro_title, LV_ALIGN_TOP_LEFT, 28, 2);
-  lv_obj_set_style_text_color(g_recorder.analysis_pro_title, lv_color_hex(0x38EF7D), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analysis_pro_title, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_pro_title,
+                              lv_color_hex(0x38EF7D), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_pro_title,
+                             &lv_font_montserrat_14, LV_PART_MAIN);
 
   // Pro text (the actual feedback)
   g_recorder.analysis_pro_text = lv_label_create(g_recorder.analysis_pro_card);
@@ -2560,37 +2942,49 @@ static void create_analysis_result_screen(void) {
   lv_obj_align(g_recorder.analysis_pro_text, LV_ALIGN_TOP_LEFT, 0, 28);
   lv_obj_set_width(g_recorder.analysis_pro_text, LV_PCT(100));
   lv_label_set_long_mode(g_recorder.analysis_pro_text, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_color(g_recorder.analysis_pro_text, lv_color_hex(0xe8e8e8), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analysis_pro_text, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_pro_text,
+                              lv_color_hex(0xe8e8e8), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_pro_text,
+                             &lv_font_montserrat_14, LV_PART_MAIN);
 
   // =================================================================
   // CON CARD - Area to Improve (Coral/Red accent)
   // =================================================================
-  g_recorder.analysis_con_card = lv_obj_create(g_recorder.analysis_result_screen);
+  g_recorder.analysis_con_card =
+      lv_obj_create(g_recorder.analysis_result_screen);
   lv_obj_set_size(g_recorder.analysis_con_card, LV_PCT(90), 90);
   lv_obj_align(g_recorder.analysis_con_card, LV_ALIGN_TOP_MID, 0, 310);
-  lv_obj_set_style_bg_color(g_recorder.analysis_con_card, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(g_recorder.analysis_con_card, LV_OPA_10, LV_PART_MAIN);
-  lv_obj_set_style_border_color(g_recorder.analysis_con_card, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(g_recorder.analysis_con_card,
+                            lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.analysis_con_card, LV_OPA_10,
+                          LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.analysis_con_card,
+                                lv_color_hex(0xFF6B6B), LV_PART_MAIN);
   lv_obj_set_style_border_width(g_recorder.analysis_con_card, 2, LV_PART_MAIN);
-  lv_obj_set_style_border_opa(g_recorder.analysis_con_card, LV_OPA_60, LV_PART_MAIN);
+  lv_obj_set_style_border_opa(g_recorder.analysis_con_card, LV_OPA_60,
+                              LV_PART_MAIN);
   lv_obj_set_style_radius(g_recorder.analysis_con_card, 16, LV_PART_MAIN);
   lv_obj_set_style_pad_all(g_recorder.analysis_con_card, 12, LV_PART_MAIN);
-  lv_obj_set_scrollbar_mode(g_recorder.analysis_con_card, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_scrollbar_mode(g_recorder.analysis_con_card,
+                            LV_SCROLLBAR_MODE_OFF);
 
   // Con icon (arrow up for improvement)
   g_recorder.analysis_con_icon = lv_label_create(g_recorder.analysis_con_card);
   lv_label_set_text(g_recorder.analysis_con_icon, LV_SYMBOL_UP);
   lv_obj_align(g_recorder.analysis_con_icon, LV_ALIGN_TOP_LEFT, 0, 0);
-  lv_obj_set_style_text_color(g_recorder.analysis_con_icon, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analysis_con_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_con_icon,
+                              lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_con_icon,
+                             &lv_font_montserrat_24, LV_PART_MAIN);
 
   // Con title
   g_recorder.analysis_con_title = lv_label_create(g_recorder.analysis_con_card);
   lv_label_set_text(g_recorder.analysis_con_title, "Area to Improve");
   lv_obj_align(g_recorder.analysis_con_title, LV_ALIGN_TOP_LEFT, 28, 2);
-  lv_obj_set_style_text_color(g_recorder.analysis_con_title, lv_color_hex(0xFF6B6B), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analysis_con_title, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_con_title,
+                              lv_color_hex(0xFF6B6B), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_con_title,
+                             &lv_font_montserrat_14, LV_PART_MAIN);
 
   // Con text (the actual feedback)
   g_recorder.analysis_con_text = lv_label_create(g_recorder.analysis_con_card);
@@ -2598,29 +2992,37 @@ static void create_analysis_result_screen(void) {
   lv_obj_align(g_recorder.analysis_con_text, LV_ALIGN_TOP_LEFT, 0, 28);
   lv_obj_set_width(g_recorder.analysis_con_text, LV_PCT(100));
   lv_label_set_long_mode(g_recorder.analysis_con_text, LV_LABEL_LONG_WRAP);
-  lv_obj_set_style_text_color(g_recorder.analysis_con_text, lv_color_hex(0xe8e8e8), LV_PART_MAIN);
-  lv_obj_set_style_text_font(g_recorder.analysis_con_text, &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.analysis_con_text,
+                              lv_color_hex(0xe8e8e8), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.analysis_con_text,
+                             &lv_font_montserrat_14, LV_PART_MAIN);
 
   // =================================================================
   // DONE BUTTON - Return to analyze screen
   // =================================================================
-  g_recorder.analysis_done_btn = lv_button_create(g_recorder.analysis_result_screen);
+  g_recorder.analysis_done_btn =
+      lv_button_create(g_recorder.analysis_result_screen);
   lv_obj_set_size(g_recorder.analysis_done_btn, LV_PCT(90), 50);
   lv_obj_align(g_recorder.analysis_done_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
-  lv_obj_set_style_bg_color(g_recorder.analysis_done_btn, lv_color_hex(0x6C63FF), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(g_recorder.analysis_done_btn, lv_color_hex(0x8B83FF), LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(g_recorder.analysis_done_btn,
+                            lv_color_hex(0x6C63FF), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(g_recorder.analysis_done_btn,
+                            lv_color_hex(0x8B83FF), LV_STATE_PRESSED);
   lv_obj_set_style_radius(g_recorder.analysis_done_btn, 25, LV_PART_MAIN);
   lv_obj_set_style_shadow_width(g_recorder.analysis_done_btn, 15, LV_PART_MAIN);
-  lv_obj_set_style_shadow_color(g_recorder.analysis_done_btn, lv_color_hex(0x6C63FF), LV_PART_MAIN);
-  lv_obj_set_style_shadow_opa(g_recorder.analysis_done_btn, LV_OPA_40, LV_PART_MAIN);
-  
+  lv_obj_set_style_shadow_color(g_recorder.analysis_done_btn,
+                                lv_color_hex(0x6C63FF), LV_PART_MAIN);
+  lv_obj_set_style_shadow_opa(g_recorder.analysis_done_btn, LV_OPA_40,
+                              LV_PART_MAIN);
+
   lv_obj_t *done_label = lv_label_create(g_recorder.analysis_done_btn);
   lv_label_set_text(done_label, "Done");
   lv_obj_center(done_label);
   lv_obj_set_style_text_font(done_label, &lv_font_montserrat_16, LV_PART_MAIN);
   lv_obj_set_style_text_color(done_label, lv_color_hex(0xffffff), LV_PART_MAIN);
 
-  lv_obj_add_event_cb(g_recorder.analysis_done_btn, btn_analysis_done_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(g_recorder.analysis_done_btn, btn_analysis_done_cb,
+                      LV_EVENT_CLICKED, NULL);
 }
 
 static void create_select_session_screen(void) {
@@ -3678,7 +4080,7 @@ static void update_playback_ui(void) {
 
 static void show_main_screen(void) {
   g_recorder.current_screen = SCREEN_MAIN;
-  lv_screen_load(g_recorder.main_screen);
+  lv_scr_load(g_recorder.main_screen);
 }
 
 static void show_recording_screen(void) {
@@ -3766,28 +4168,32 @@ static void show_select_sheet_screen(void) {
 
 // Helper function to extract a section from feedback text
 // Expected format: "Score: X/10. Strength: [text]. Improve: [text]."
-static void extract_feedback_section(const char *feedback, const char *marker, char *out, size_t out_size) {
-  if (!feedback || !marker || !out || out_size == 0) return;
+static void extract_feedback_section(const char *feedback, const char *marker,
+                                     char *out, size_t out_size) {
+  if (!feedback || !marker || !out || out_size == 0)
+    return;
   out[0] = '\0';
-  
+
   // Find the marker position (exact match first)
   const char *start = strstr(feedback, marker);
-  
+
   // If not found, try case variations
   if (!start) {
     // Build lowercase version of marker for case-insensitive search
     char marker_lower[32] = {0};
     for (int i = 0; marker[i] && i < 31; i++) {
-      marker_lower[i] = (marker[i] >= 'A' && marker[i] <= 'Z') ? marker[i] + 32 : marker[i];
+      marker_lower[i] =
+          (marker[i] >= 'A' && marker[i] <= 'Z') ? marker[i] + 32 : marker[i];
     }
-    
+
     // Search through feedback for case-insensitive match
     const char *p = feedback;
     while (*p) {
       int match = 1;
       for (int i = 0; marker_lower[i]; i++) {
         char c = p[i];
-        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c >= 'A' && c <= 'Z')
+          c += 32;
         if (c != marker_lower[i]) {
           match = 0;
           break;
@@ -3800,39 +4206,40 @@ static void extract_feedback_section(const char *feedback, const char *marker, c
       p++;
     }
   }
-  
+
   if (!start) {
     strncpy(out, "See full feedback", out_size - 1);
     out[out_size - 1] = '\0';
     return;
   }
-  
+
   // Skip to after the colon
   const char *content = strchr(start, ':');
   if (content) {
     content++; // Skip the colon
-    while (*content == ' ' || *content == '\n' || *content == '\t') content++; // Skip whitespace
+    while (*content == ' ' || *content == '\n' || *content == '\t')
+      content++; // Skip whitespace
   } else {
     content = start + strlen(marker);
   }
-  
-  // Find the end - look for period followed by space and next section marker, or end of string
-  // Format: "Strength: text here. Improve: text here."
+
+  // Find the end - look for period followed by space and next section marker,
+  // or end of string Format: "Strength: text here. Improve: text here."
   const char *end = content;
   const char *best_end = NULL;
-  
+
   while (*end) {
     // Check for period that ends this section
     if (*end == '.') {
       // Check if this is followed by a new section marker
       const char *after = end + 1;
-      while (*after == ' ') after++;
-      
+      while (*after == ' ')
+        after++;
+
       // Check for known section markers after the period
       if (strncmp(after, "Strength", 8) == 0 ||
           strncmp(after, "Improve", 7) == 0 ||
-          strncmp(after, "Score", 5) == 0 ||
-          *after == '\0' || *after == '\n') {
+          strncmp(after, "Score", 5) == 0 || *after == '\0' || *after == '\n') {
         // This period ends our section
         best_end = end;
         break;
@@ -3841,155 +4248,222 @@ static void extract_feedback_section(const char *feedback, const char *marker, c
     }
     end++;
   }
-  
+
   // If we didn't find a clear end, use end of string
   if (!best_end) {
     best_end = end;
   }
-  
+
   // Copy the content (excluding the trailing period)
   size_t len = best_end - content;
-  if (len >= out_size) len = out_size - 1;
+  if (len >= out_size)
+    len = out_size - 1;
   strncpy(out, content, len);
   out[len] = '\0';
-  
+
   // Trim trailing whitespace and periods
-  while (len > 0 && (out[len-1] == ' ' || out[len-1] == '\n' || out[len-1] == '\r' || out[len-1] == '.')) {
+  while (len > 0 && (out[len - 1] == ' ' || out[len - 1] == '\n' ||
+                     out[len - 1] == '\r' || out[len - 1] == '.')) {
     out[--len] = '\0';
   }
 }
 
-// Helper to get a score description based on value
-static const char* get_score_description(int score) {
-  if (score >= 9) return "Excellent!";
-  if (score >= 8) return "Great!";
-  if (score >= 7) return "Good!";
-  if (score >= 6) return "Decent";
-  if (score >= 5) return "Fair";
-  if (score >= 4) return "Needs Work";
+// Helper to get a score description based on value (0-100 scale)
+static const char *get_score_description(int score) {
+  if (score >= 90)
+    return "Excellent!";
+  if (score >= 80)
+    return "Great!";
+  if (score >= 70)
+    return "Good!";
+  if (score >= 60)
+    return "Decent";
+  if (score >= 50)
+    return "Fair";
+  if (score >= 40)
+    return "Needs Work";
   return "Keep Practicing";
 }
 
+// Animation callback for score arc climbing effect
+static void score_anim_timer_cb(lv_timer_t *timer) {
+  (void)timer;
+
+  if (g_recorder.score_anim_current < g_recorder.parsed_score) {
+    // Increment score - faster for higher scores, minimum 1 per tick
+    int increment = (g_recorder.parsed_score - g_recorder.score_anim_current) / 10;
+    if (increment < 1) increment = 1;
+    g_recorder.score_anim_current += increment;
+
+    // Clamp to target
+    if (g_recorder.score_anim_current > g_recorder.parsed_score) {
+      g_recorder.score_anim_current = g_recorder.parsed_score;
+    }
+
+    // Update arc value
+    if (g_recorder.analysis_score_arc) {
+      lv_arc_set_value(g_recorder.analysis_score_arc, g_recorder.score_anim_current);
+    }
+
+    // Update score label
+    if (g_recorder.analysis_score_label) {
+      char score_str[8];
+      snprintf(score_str, sizeof(score_str), "%d", g_recorder.score_anim_current);
+      lv_label_set_text(g_recorder.analysis_score_label, score_str);
+    }
+
+    // Update color based on current animated value
+    if (g_recorder.analysis_score_arc) {
+      lv_color_t score_color;
+      if (g_recorder.score_anim_current >= 80) {
+        score_color = lv_color_hex(0x38EF7D); // Green
+      } else if (g_recorder.score_anim_current >= 60) {
+        score_color = lv_color_hex(0xFFD93D); // Yellow
+      } else if (g_recorder.score_anim_current >= 40) {
+        score_color = lv_color_hex(0xFFA726); // Orange
+      } else {
+        score_color = lv_color_hex(0xFF6B6B); // Red
+      }
+      lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, score_color,
+                                 LV_PART_INDICATOR);
+    }
+  } else {
+    // Animation complete - stop timer and show final description
+    if (g_recorder.score_anim_timer) {
+      lv_timer_delete(g_recorder.score_anim_timer);
+      g_recorder.score_anim_timer = NULL;
+    }
+
+    // Update description with final score text
+    if (g_recorder.analysis_score_desc) {
+      lv_label_set_text(g_recorder.analysis_score_desc,
+                        get_score_description(g_recorder.parsed_score));
+
+      // Match description color to final score
+      lv_color_t desc_color;
+      if (g_recorder.parsed_score >= 80) {
+        desc_color = lv_color_hex(0x38EF7D);
+      } else if (g_recorder.parsed_score >= 60) {
+        desc_color = lv_color_hex(0xFFD93D);
+      } else if (g_recorder.parsed_score >= 40) {
+        desc_color = lv_color_hex(0xFFA726);
+      } else {
+        desc_color = lv_color_hex(0xFF6B6B);
+      }
+      lv_obj_set_style_text_color(g_recorder.analysis_score_desc, desc_color,
+                                  LV_PART_MAIN);
+    }
+  }
+}
+
 static void show_analysis_result_screen(void) {
+  PR_NOTICE("[ANALYZE] show_analysis_result_screen() called, score=%d", g_recorder.parsed_score);
+  PR_NOTICE("[ANALYZE] pro: %.50s...", g_recorder.parsed_pro);
+  PR_NOTICE("[ANALYZE] con: %.50s...", g_recorder.parsed_con);
   g_recorder.current_screen = SCREEN_ANALYSIS_RESULT;
 
-  // =================================================================
-  // PARSE THE FEEDBACK - Extract score, pro, and con
-  // =================================================================
-  
-  // Default values
-  g_recorder.parsed_score = 0;
-  strncpy(g_recorder.parsed_pro, "Good effort overall!", sizeof(g_recorder.parsed_pro) - 1);
-  strncpy(g_recorder.parsed_con, "Keep practicing!", sizeof(g_recorder.parsed_con) - 1);
-  
-  const char *feedback = g_recorder.analyze_feedback;
-  
-  // Extract score - look for patterns like "7/10", "Score: 7", etc.
-  char *score_ptr = strstr(feedback, "/10");
-  if (score_ptr && score_ptr > feedback) {
-    char *num_start = score_ptr - 1;
-    while (num_start > feedback && *num_start >= '0' && *num_start <= '9') {
-      num_start--;
-    }
-    num_start++;
-    int score_val = 0;
-    if (sscanf(num_start, "%d", &score_val) == 1 && score_val >= 0 && score_val <= 10) {
-      g_recorder.parsed_score = score_val;
-    }
-  }
-  
-  // Try extracting structured feedback sections
-  extract_feedback_section(feedback, "Strength:", g_recorder.parsed_pro, sizeof(g_recorder.parsed_pro));
-  extract_feedback_section(feedback, "Improve:", g_recorder.parsed_con, sizeof(g_recorder.parsed_con));
-  
-  // If sections weren't found, try to intelligently split the feedback
-  if (strcmp(g_recorder.parsed_pro, "See full feedback") == 0 || strlen(g_recorder.parsed_pro) < 5) {
-    // Take first meaningful sentence as pro
-    const char *first_period = strchr(feedback, '.');
-    if (first_period && (first_period - feedback) > 10) {
-      size_t len = first_period - feedback + 1;
-      if (len >= sizeof(g_recorder.parsed_pro)) len = sizeof(g_recorder.parsed_pro) - 1;
-      strncpy(g_recorder.parsed_pro, feedback, len);
-      g_recorder.parsed_pro[len] = '\0';
-    }
-  }
-  
-  if (strcmp(g_recorder.parsed_con, "See full feedback") == 0 || strlen(g_recorder.parsed_con) < 5) {
-    // Look for improvement suggestions
-    const char *improve_markers[] = {"could", "should", "try", "work on", "practice", "focus", NULL};
-    for (int i = 0; improve_markers[i]; i++) {
-      const char *found = strstr(feedback, improve_markers[i]);
-      if (found) {
-        const char *end = strchr(found, '.');
-        if (end) {
-          size_t len = end - found + 1;
-          if (len >= sizeof(g_recorder.parsed_con)) len = sizeof(g_recorder.parsed_con) - 1;
-          strncpy(g_recorder.parsed_con, found, len);
-          g_recorder.parsed_con[len] = '\0';
-          break;
-        }
+  // NOTE: Score, pro, and con are already parsed in analyze_selected_recording()
+  // before this function is called. We just use the values directly.
+
+  // Check if we have valid data - if not, the parse failed
+  BOOL_T pro_is_default = (strcmp(g_recorder.parsed_pro, "Good effort overall!") == 0 ||
+                           strlen(g_recorder.parsed_pro) == 0);
+  BOOL_T con_is_default = (strcmp(g_recorder.parsed_con, "Keep practicing!") == 0 ||
+                           strlen(g_recorder.parsed_con) == 0);
+
+  // If score is 0, try to extract from the feedback text as last resort
+  if (g_recorder.parsed_score == 0 && strlen(g_recorder.analyze_feedback) > 0) {
+    const char *feedback = g_recorder.analyze_feedback;
+    PR_NOTICE("[ANALYZE] Score is 0, trying fallback on feedback text...");
+
+    // Look for "/100" pattern in feedback text (e.g., "Score: 78/100")
+    char *score_ptr = strstr(feedback, "/100");
+    if (score_ptr && score_ptr > feedback) {
+      char *num_start = score_ptr - 1;
+      while (num_start > feedback && *num_start >= '0' && *num_start <= '9') {
+        num_start--;
+      }
+      num_start++;
+      int score_val = 0;
+      if (sscanf(num_start, "%d", &score_val) == 1 && score_val > 0 &&
+          score_val <= 100) {
+        g_recorder.parsed_score = score_val;
+        PR_NOTICE("[ANALYZE] Extracted score from /100 pattern: %d", score_val);
       }
     }
+
+    // Try to extract Strength and Improve from feedback text
+    if (pro_is_default) {
+      extract_feedback_section(feedback, "Strength:", g_recorder.parsed_pro,
+                               sizeof(g_recorder.parsed_pro));
+      // If still default after extraction, keep the default (don't use "See full feedback")
+      if (strcmp(g_recorder.parsed_pro, "See full feedback") == 0) {
+        strncpy(g_recorder.parsed_pro, "Good effort overall!",
+                sizeof(g_recorder.parsed_pro) - 1);
+      }
+    }
+    if (con_is_default) {
+      extract_feedback_section(feedback, "Improve:", g_recorder.parsed_con,
+                               sizeof(g_recorder.parsed_con));
+      // If still default after extraction, keep the default (don't use "See full feedback")
+      if (strcmp(g_recorder.parsed_con, "See full feedback") == 0) {
+        strncpy(g_recorder.parsed_con, "Keep practicing!",
+                sizeof(g_recorder.parsed_con) - 1);
+      }
+    }
+
+    PR_NOTICE("[ANALYZE] After fallback: score=%d, pro=%.30s, con=%.30s",
+              g_recorder.parsed_score, g_recorder.parsed_pro, g_recorder.parsed_con);
   }
 
   // =================================================================
-  // UPDATE UI ELEMENTS
+  // UPDATE UI ELEMENTS WITH ANIMATION
   // =================================================================
-  
-  // Update score arc
+
+  // Reset animation state and start from 0
+  g_recorder.score_anim_current = 0;
+
+  // Initialize arc and label to 0
   if (g_recorder.analysis_score_arc) {
-    lv_arc_set_value(g_recorder.analysis_score_arc, g_recorder.parsed_score);
-    
-    // Color based on score
-    lv_color_t score_color;
-    if (g_recorder.parsed_score >= 8) {
-      score_color = lv_color_hex(0x38EF7D); // Green
-    } else if (g_recorder.parsed_score >= 6) {
-      score_color = lv_color_hex(0xFFD93D); // Yellow
-    } else if (g_recorder.parsed_score >= 4) {
-      score_color = lv_color_hex(0xFFA726); // Orange
-    } else {
-      score_color = lv_color_hex(0xFF6B6B); // Red
-    }
-    lv_obj_set_style_arc_color(g_recorder.analysis_score_arc, score_color, LV_PART_INDICATOR);
+    lv_arc_set_value(g_recorder.analysis_score_arc, 0);
+    lv_obj_set_style_arc_color(g_recorder.analysis_score_arc,
+                               lv_color_hex(0xFF6B6B), LV_PART_INDICATOR);
   }
-  
-  // Update score label
+
   if (g_recorder.analysis_score_label) {
-    char score_str[8];
-    snprintf(score_str, sizeof(score_str), "%d", g_recorder.parsed_score);
-    lv_label_set_text(g_recorder.analysis_score_label, score_str);
+    lv_label_set_text(g_recorder.analysis_score_label, "0");
   }
-  
-  // Update score description
+
+  // Show "out of 100" during animation
   if (g_recorder.analysis_score_desc) {
-    lv_label_set_text(g_recorder.analysis_score_desc, get_score_description(g_recorder.parsed_score));
-    
-    // Match description color to score
-    lv_color_t desc_color;
-    if (g_recorder.parsed_score >= 8) {
-      desc_color = lv_color_hex(0x38EF7D);
-    } else if (g_recorder.parsed_score >= 6) {
-      desc_color = lv_color_hex(0xFFD93D);
-    } else if (g_recorder.parsed_score >= 4) {
-      desc_color = lv_color_hex(0xFFA726);
-    } else {
-      desc_color = lv_color_hex(0xFF6B6B);
-    }
-    lv_obj_set_style_text_color(g_recorder.analysis_score_desc, desc_color, LV_PART_MAIN);
+    lv_label_set_text(g_recorder.analysis_score_desc, "out of 100");
+    lv_obj_set_style_text_color(g_recorder.analysis_score_desc,
+                                lv_color_hex(0x888899), LV_PART_MAIN);
   }
-  
-  // Update pro card text
+
+  // Update pro card text (no animation)
   if (g_recorder.analysis_pro_text) {
     lv_label_set_text(g_recorder.analysis_pro_text, g_recorder.parsed_pro);
   }
-  
-  // Update con card text
+
+  // Update con card text (no animation)
   if (g_recorder.analysis_con_text) {
     lv_label_set_text(g_recorder.analysis_con_text, g_recorder.parsed_con);
   }
 
+  PR_NOTICE("[ANALYZE] About to load analysis_result_screen (screen=%p)", g_recorder.analysis_result_screen);
   lv_screen_load(g_recorder.analysis_result_screen);
+  PR_NOTICE("[ANALYZE] lv_screen_load() completed");
+
+  // Stop any existing animation timer
+  if (g_recorder.score_anim_timer) {
+    lv_timer_delete(g_recorder.score_anim_timer);
+    g_recorder.score_anim_timer = NULL;
+  }
+
+  // Start score animation timer (50ms interval for smooth animation)
+  g_recorder.score_anim_timer = lv_timer_create(score_anim_timer_cb, 50, NULL);
+  PR_NOTICE("[ANALYZE] Animation timer started, parsed_score=%d", g_recorder.parsed_score);
 }
 
 static void show_playback_screen(int session_idx) {
@@ -4127,6 +4601,1206 @@ static void update_loading_progress(int progress, uint32_t downloaded,
   lv_refr_now(NULL);
 }
 
+// =================================================================
+// WIFI CONFIGURATION FUNCTIONS
+// =================================================================
+
+// Forward declarations
+static void wifi_event_callback(WF_EVENT_E event, void *arg);
+static void wifi_scan_networks(void);
+static void wifi_connect_to_network(void);
+static void wifi_refresh_network_list_display(void);
+static void wifi_show_password_popup(uint32_t network_idx);
+static void wifi_hide_password_popup(void);
+static void wifi_update_status_display(void);
+static void wifi_network_item_cb(lv_event_t *e);
+
+// WiFi event callback
+static void wifi_event_callback(WF_EVENT_E event, void *arg) {
+  (void)arg;
+  PR_DEBUG("WiFi event: %d", event);
+
+  switch (event) {
+  case WFE_CONNECTED: {
+    PR_NOTICE("[WIFI] WFE_CONNECTED received!");
+    g_recorder.wifi_state = WIFI_STATE_CONNECTED;
+    g_net_connected = TRUE;
+    strncpy(g_recorder.wifi_connected_ssid, g_recorder.wifi_selected_ssid,
+            MAX_SSID_LEN);
+    NW_IP_S ip_info;
+    if (tal_wifi_get_ip(WF_STATION, &ip_info) == OPRT_OK) {
+      PR_NOTICE("IP: %s, Gateway: %s", ip_info.ip, ip_info.gw);
+    }
+    wifi_hide_password_popup();
+    wifi_refresh_network_list_display();
+    wifi_update_status_display();
+
+    // Save WiFi credentials locally immediately
+    PR_NOTICE("[WIFI] Saving credentials locally: SSID='%s'",
+              g_recorder.wifi_selected_ssid);
+    wifi_save_credentials(g_recorder.wifi_selected_ssid,
+                          g_recorder.wifi_password);
+    g_recorder.wifi_configured = TRUE;
+
+    // Mark that we need to save to cloud (will do this after network is fully
+    // ready)
+    PR_NOTICE("[WIFI] Marking for cloud save after network is ready");
+    g_recorder.wifi_needs_cloud_save = TRUE;
+
+    // If we're on WiFi config screen and just connected, switch to main screen
+    // Use a small delay to ensure UI updates complete first
+    if (g_recorder.current_screen == SCREEN_WIFI_CONFIG) {
+      PR_NOTICE("WiFi connected successfully, switching to main screen");
+      // Force UI refresh first, then switch screen
+      lv_refr_now(NULL);
+      show_main_screen();
+    }
+    break;
+  }
+  case WFE_CONNECT_FAILED:
+    PR_ERR("[WIFI] WFE_CONNECT_FAILED received! Current state=%d", g_recorder.wifi_state);
+    // Only act on this if we're still trying to connect - ignore if already connected
+    // (SDK can send delayed failure events even after successful connection)
+    if (g_recorder.wifi_state == WIFI_STATE_CONNECTING) {
+      g_recorder.wifi_state = WIFI_STATE_ERROR;
+      g_recorder.wifi_configured = FALSE;
+      wifi_update_status_display();
+
+      // If connection failed, go back to WiFi config screen
+      if (g_recorder.current_screen != SCREEN_WIFI_CONFIG) {
+        PR_NOTICE("[WIFI] Connection failed, returning to WiFi config screen");
+        show_wifi_config_screen(FALSE);
+      }
+    } else {
+      PR_NOTICE("[WIFI] Ignoring WFE_CONNECT_FAILED - already in state %d", g_recorder.wifi_state);
+    }
+    break;
+  case WFE_DISCONNECTED:
+    PR_NOTICE("[WIFI] WFE_DISCONNECTED received! Current state=%d", g_recorder.wifi_state);
+    // Check actual SDK status - often this event fires spuriously
+    {
+      WF_STATION_STAT_E actual_stat = WSS_IDLE;
+      tal_wifi_station_get_status(&actual_stat);
+      if (actual_stat == WSS_GOT_IP) {
+        PR_NOTICE("[WIFI] Ignoring WFE_DISCONNECTED - SDK status is still WSS_GOT_IP");
+      } else if (g_recorder.current_screen == SCREEN_WIFI_CONFIG) {
+        // Only update state if user is on WiFi config screen
+        g_recorder.wifi_state = WIFI_STATE_DISCONNECTED;
+        g_recorder.wifi_connected_ssid[0] = '\0';
+        g_net_connected = FALSE;
+        wifi_update_status_display();
+      } else {
+        // On other screens, just update internal state without disrupting UI
+        g_net_connected = FALSE;
+        PR_NOTICE("[WIFI] Marked as offline, user can reconnect via Settings");
+      }
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+// Scan for WiFi networks
+static void wifi_scan_networks(void) {
+  PR_NOTICE("Scanning for WiFi networks...");
+
+  wifi_state_t previous_state = g_recorder.wifi_state;
+  g_recorder.wifi_state = WIFI_STATE_SCANNING;
+  g_recorder.wifi_network_count = 0;
+
+  if (g_recorder.wifi_scan_btn_label) {
+    lv_label_set_text(g_recorder.wifi_scan_btn_label,
+                      LV_SYMBOL_REFRESH " Scanning...");
+  }
+  lv_refr_now(NULL);
+
+  AP_IF_S *ap_info = NULL;
+  uint32_t ap_count = 0;
+
+  OPERATE_RET ret = tal_wifi_all_ap_scan(&ap_info, &ap_count);
+  if (ret != OPRT_OK) {
+    PR_ERR("WiFi scan failed: %d", ret);
+    g_recorder.wifi_state = WIFI_STATE_ERROR;
+    if (g_recorder.wifi_scan_btn_label) {
+      lv_label_set_text(g_recorder.wifi_scan_btn_label,
+                        LV_SYMBOL_REFRESH " Scan for Networks");
+    }
+    wifi_update_status_display();
+    return;
+  }
+
+  PR_NOTICE("Found %d networks", ap_count);
+
+  uint32_t valid_count = 0;
+  for (uint32_t i = 0; i < ap_count && valid_count < MAX_WIFI_NETWORKS; i++) {
+    if (ap_info[i].ssid[0] == '\0' ||
+        strlen((const char *)ap_info[i].ssid) == 0) {
+      continue;
+    }
+    strncpy(g_recorder.wifi_networks[valid_count].ssid,
+            (const char *)ap_info[i].ssid, MAX_SSID_LEN);
+    g_recorder.wifi_networks[valid_count].rssi = ap_info[i].rssi;
+    g_recorder.wifi_networks[valid_count].channel = ap_info[i].channel;
+    g_recorder.wifi_networks[valid_count].auth_mode = ap_info[i].security;
+    valid_count++;
+  }
+  g_recorder.wifi_network_count = valid_count;
+
+  tal_wifi_release_ap(ap_info);
+
+  // Restore scan button text FIRST (before state change)
+  if (g_recorder.wifi_scan_btn_label) {
+    lv_label_set_text(g_recorder.wifi_scan_btn_label,
+                      LV_SYMBOL_REFRESH " Scan for Networks");
+  }
+
+  // Update UI with network list
+  wifi_refresh_network_list_display();
+
+  // Restore connected state if we were connected, otherwise set to disconnected
+  if (previous_state == WIFI_STATE_CONNECTED) {
+    g_recorder.wifi_state = WIFI_STATE_CONNECTED;
+  } else {
+    g_recorder.wifi_state = WIFI_STATE_DISCONNECTED;
+  }
+  
+  // Update status display with restored state
+  wifi_update_status_display();
+}
+
+// Refresh network list display
+static void wifi_refresh_network_list_display(void) {
+  if (g_recorder.wifi_network_list == NULL)
+    return;
+
+  lv_obj_clean(g_recorder.wifi_network_list);
+
+  if (g_recorder.wifi_network_count > 0) {
+    for (uint32_t i = 0; i < g_recorder.wifi_network_count; i++) {
+      BOOL_T is_connected = (g_recorder.wifi_connected_ssid[0] != '\0' &&
+                             strcmp(g_recorder.wifi_networks[i].ssid,
+                                    g_recorder.wifi_connected_ssid) == 0);
+
+      lv_obj_t *btn =
+          lv_list_add_btn(g_recorder.wifi_network_list, LV_SYMBOL_WIFI,
+                          g_recorder.wifi_networks[i].ssid);
+
+      lv_obj_set_user_data(btn, (void *)(uintptr_t)i);
+      lv_obj_add_event_cb(btn, wifi_network_item_cb, LV_EVENT_CLICKED, NULL);
+
+      if (is_connected) {
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x064E3B), LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x10B981),
+                                      LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 2, LV_PART_MAIN);
+      } else {
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1E293B), LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+        lv_obj_set_style_border_side(btn, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+        lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, lv_color_hex(0x334155),
+                                      LV_PART_MAIN);
+      }
+      lv_obj_set_style_text_color(btn, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+      lv_obj_set_style_text_font(btn, &lv_font_montserrat_16, LV_PART_MAIN);
+      lv_obj_set_style_pad_ver(btn, 12, LV_PART_MAIN);
+
+      if (is_connected) {
+        lv_obj_t *status_label = lv_label_create(btn);
+        lv_label_set_text(status_label, LV_SYMBOL_OK " Connected");
+        lv_obj_set_style_text_color(status_label, lv_color_hex(0x10B981),
+                                    LV_PART_MAIN);
+        lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14,
+                                   LV_PART_MAIN);
+        lv_obj_align(status_label, LV_ALIGN_RIGHT_MID, -5, 0);
+      } else if (g_recorder.wifi_networks[i].auth_mode == 0) {
+        lv_obj_t *open_label = lv_label_create(btn);
+        lv_label_set_text(open_label, "(open)");
+        lv_obj_set_style_text_color(open_label, lv_color_hex(0x10B981),
+                                    LV_PART_MAIN);
+        lv_obj_set_style_text_font(open_label, &lv_font_montserrat_14,
+                                   LV_PART_MAIN);
+        lv_obj_align(open_label, LV_ALIGN_RIGHT_MID, -5, 0);
+      }
+    }
+  } else {
+    lv_obj_t *btn = lv_list_add_btn(g_recorder.wifi_network_list,
+                                    LV_SYMBOL_CLOSE, "No networks found");
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1E293B), LV_PART_MAIN);
+    lv_obj_set_style_text_color(btn, lv_color_hex(0x94A3B8), LV_PART_MAIN);
+  }
+}
+
+// Connect to selected network
+static void wifi_connect_to_network(void) {
+  uint32_t idx = g_recorder.wifi_selected_network_idx;
+
+  if (idx >= g_recorder.wifi_network_count) {
+    PR_ERR("Invalid network selection");
+    return;
+  }
+
+  BOOL_T is_open_network = (g_recorder.wifi_networks[idx].auth_mode == 0);
+  const char *password = lv_textarea_get_text(g_recorder.wifi_password_input);
+
+  if (!is_open_network && (password == NULL || strlen(password) == 0)) {
+    PR_ERR("No password entered for secured network");
+    return;
+  }
+
+  strncpy(g_recorder.wifi_selected_ssid, g_recorder.wifi_networks[idx].ssid,
+          MAX_SSID_LEN);
+
+  if (is_open_network) {
+    g_recorder.wifi_password[0] = '\0';
+    PR_NOTICE("Connecting to open network: %s", g_recorder.wifi_selected_ssid);
+  } else {
+    strncpy(g_recorder.wifi_password, password, MAX_PASSWORD_LEN);
+    PR_NOTICE("Connecting to secured network: %s",
+              g_recorder.wifi_selected_ssid);
+  }
+
+  if (g_recorder.wifi_state == WIFI_STATE_CONNECTED) {
+    PR_NOTICE("Disconnecting from previous network.");
+    tal_wifi_station_disconnect();
+  }
+
+  g_recorder.wifi_state = WIFI_STATE_CONNECTING;
+  wifi_update_status_display();
+
+  PR_NOTICE("[WIFI] Connecting to SSID='%s'", g_recorder.wifi_selected_ssid);
+
+  // Use netmgr for connection as well, it might be needed for the state
+  // machine
+  netconn_wifi_info_t wifi_info = {0};
+  strcpy(wifi_info.ssid, g_recorder.wifi_selected_ssid);
+  strcpy(wifi_info.pswd, g_recorder.wifi_password);
+  netmgr_conn_set(NETCONN_WIFI, NETCONN_CMD_SSID_PSWD, &wifi_info);
+
+  OPERATE_RET ret =
+      tal_wifi_station_connect((int8_t *)g_recorder.wifi_selected_ssid,
+                               (int8_t *)g_recorder.wifi_password);
+  if (ret != OPRT_OK) {
+    PR_ERR("Failed to start WiFi connection: %d", ret);
+    g_recorder.wifi_state = WIFI_STATE_ERROR;
+    wifi_update_status_display();
+  }
+}
+
+// Show password popup
+static void wifi_show_password_popup(uint32_t network_idx) {
+  if (network_idx >= g_recorder.wifi_network_count)
+    return;
+
+  g_recorder.wifi_selected_network_idx = network_idx;
+  BOOL_T is_open = (g_recorder.wifi_networks[network_idx].auth_mode == 0);
+
+  char title_text[64];
+  if (is_open) {
+    snprintf(title_text, sizeof(title_text), "Connect to \"%s\"?",
+             g_recorder.wifi_networks[network_idx].ssid);
+  } else {
+    snprintf(title_text, sizeof(title_text), "Password for \"%s\"",
+             g_recorder.wifi_networks[network_idx].ssid);
+  }
+  lv_label_set_text(g_recorder.wifi_popup_title, title_text);
+
+  if (is_open) {
+    lv_obj_add_flag(g_recorder.wifi_password_input, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g_recorder.wifi_password_toggle_btn, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(g_recorder.wifi_password_input, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g_recorder.wifi_password_toggle_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_text(g_recorder.wifi_password_input, "");
+  }
+
+  lv_obj_clear_flag(g_recorder.wifi_popup, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Hide password popup
+static void wifi_hide_password_popup(void) {
+  lv_obj_add_flag(g_recorder.wifi_popup, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(g_recorder.wifi_keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Update status display
+static void wifi_update_status_display(void) {
+  if (g_recorder.wifi_status_label) {
+    PR_NOTICE("[WIFI] Updating status display, state=%d",
+              g_recorder.wifi_state);
+    switch (g_recorder.wifi_state) {
+    case WIFI_STATE_DISCONNECTED:
+      lv_label_set_text(g_recorder.wifi_status_label,
+                        LV_SYMBOL_CLOSE " Offline");
+      lv_obj_set_style_text_color(g_recorder.wifi_status_label,
+                                  lv_color_hex(0xEF4444), LV_PART_MAIN);
+      break;
+    case WIFI_STATE_SCANNING:
+      lv_label_set_text(g_recorder.wifi_status_label,
+                        LV_SYMBOL_REFRESH " Scanning...");
+      lv_obj_set_style_text_color(g_recorder.wifi_status_label,
+                                  lv_color_hex(0x22D3EE), LV_PART_MAIN);
+      break;
+    case WIFI_STATE_CONNECTING:
+      lv_label_set_text(g_recorder.wifi_status_label,
+                        LV_SYMBOL_REFRESH " Connecting...");
+      lv_obj_set_style_text_color(g_recorder.wifi_status_label,
+                                  lv_color_hex(0x22D3EE), LV_PART_MAIN);
+      break;
+    case WIFI_STATE_CONNECTED:
+      lv_label_set_text(g_recorder.wifi_status_label,
+                        LV_SYMBOL_OK " Connected");
+      lv_obj_set_style_text_color(g_recorder.wifi_status_label,
+                                  lv_color_hex(0x10B981), LV_PART_MAIN);
+      break;
+    case WIFI_STATE_ERROR:
+      lv_label_set_text(g_recorder.wifi_status_label,
+                        LV_SYMBOL_WARNING " Error");
+      lv_obj_set_style_text_color(g_recorder.wifi_status_label,
+                                  lv_color_hex(0xEF4444), LV_PART_MAIN);
+      break;
+    }
+  }
+}
+
+// Event callbacks
+static void wifi_scan_btn_cb(lv_event_t *e) {
+  (void)e;
+  wifi_scan_networks();
+}
+
+static void wifi_network_item_cb(lv_event_t *e) {
+  lv_obj_t *btn = lv_event_get_target(e);
+  uint32_t idx = (uint32_t)(uintptr_t)lv_obj_get_user_data(btn);
+  PR_DEBUG("Network selected: %d - %s", idx,
+           g_recorder.wifi_networks[idx].ssid);
+  wifi_show_password_popup(idx);
+}
+
+static void wifi_connect_btn_cb(lv_event_t *e) {
+  (void)e;
+  wifi_connect_to_network();
+  wifi_hide_password_popup();
+}
+
+static void wifi_close_popup_cb(lv_event_t *e) {
+  (void)e;
+  wifi_hide_password_popup();
+}
+
+static void wifi_password_focus_cb(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+
+  if (code == LV_EVENT_CLICKED) {
+    lv_obj_clear_flag(g_recorder.wifi_keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_keyboard_set_textarea(g_recorder.wifi_keyboard,
+                             g_recorder.wifi_password_input);
+  }
+}
+
+static void wifi_keyboard_event_cb(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+
+  if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+    lv_obj_add_flag(g_recorder.wifi_keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_state(g_recorder.wifi_password_input, LV_STATE_FOCUSED);
+  }
+}
+
+static void wifi_password_toggle_cb(lv_event_t *e) {
+  (void)e;
+  g_recorder.wifi_password_visible = !g_recorder.wifi_password_visible;
+  lv_textarea_set_password_mode(g_recorder.wifi_password_input,
+                                !g_recorder.wifi_password_visible);
+
+  lv_obj_t *label = lv_obj_get_child(g_recorder.wifi_password_toggle_btn, 0);
+  if (label) {
+    lv_label_set_text(label, g_recorder.wifi_password_visible
+                                 ? LV_SYMBOL_EYE_OPEN
+                                 : LV_SYMBOL_EYE_CLOSE);
+  }
+}
+
+// Create WiFi configuration screen
+static void create_wifi_config_screen(void) {
+  g_recorder.wifi_config_screen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(g_recorder.wifi_config_screen,
+                            lv_color_hex(0x0A1628), LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_color(g_recorder.wifi_config_screen,
+                                 lv_color_hex(0x1E3A5F), LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_dir(g_recorder.wifi_config_screen, LV_GRAD_DIR_VER,
+                               LV_PART_MAIN);
+
+  // Header
+  lv_obj_t *header = lv_obj_create(g_recorder.wifi_config_screen);
+  lv_obj_set_size(header, LV_PCT(100), 50);
+  lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_color(header, lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(header, LV_OPA_90, LV_PART_MAIN);
+  lv_obj_set_style_radius(header, 0, LV_PART_MAIN);
+  lv_obj_set_style_border_width(header, 0, LV_PART_MAIN);
+  lv_obj_set_style_border_side(header, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+  lv_obj_set_style_border_width(header, 2, LV_PART_MAIN);
+  lv_obj_set_style_border_color(header, lv_color_hex(0x22D3EE), LV_PART_MAIN);
+  lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Back button (only show if WiFi is already configured)
+  lv_obj_t *back_btn = lv_btn_create(header);
+  lv_obj_set_size(back_btn, 44, 44);
+  lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x2d2d4a), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x3d3d5a), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(back_btn, 12, LV_PART_MAIN);
+  lv_obj_add_event_cb(back_btn, btn_back_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *back_label = lv_label_create(back_btn);
+  lv_label_set_text(back_label, LV_SYMBOL_LEFT);
+  lv_obj_center(back_label);
+  lv_obj_set_style_text_color(back_label, lv_color_hex(0xffffff), LV_PART_MAIN);
+  lv_obj_set_style_text_font(back_label, &lv_font_montserrat_16, LV_PART_MAIN);
+
+  lv_obj_t *title = lv_label_create(header);
+  lv_label_set_text(title, LV_SYMBOL_WIFI " WiFi Configuration");
+  lv_obj_set_style_text_color(title, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_align(title, LV_ALIGN_LEFT_MID, 55, 0);
+
+  g_recorder.wifi_status_label = lv_label_create(header);
+  lv_label_set_text(g_recorder.wifi_status_label, LV_SYMBOL_CLOSE " Offline");
+  lv_obj_set_style_text_color(g_recorder.wifi_status_label,
+                              lv_color_hex(0xEF4444), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.wifi_status_label,
+                             &lv_font_montserrat_14, LV_PART_MAIN);
+  lv_obj_align(g_recorder.wifi_status_label, LV_ALIGN_RIGHT_MID, -15, 0);
+
+  // Scan button
+  g_recorder.wifi_scan_btn = lv_btn_create(g_recorder.wifi_config_screen);
+  lv_obj_set_size(g_recorder.wifi_scan_btn, LV_PCT(90), 44);
+  lv_obj_align(g_recorder.wifi_scan_btn, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_set_style_bg_color(g_recorder.wifi_scan_btn, lv_color_hex(0x14B8A6),
+                            LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_color(g_recorder.wifi_scan_btn,
+                                 lv_color_hex(0x22D3EE), LV_PART_MAIN);
+  lv_obj_set_style_bg_grad_dir(g_recorder.wifi_scan_btn, LV_GRAD_DIR_HOR,
+                               LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_scan_btn, 8, LV_PART_MAIN);
+  lv_obj_set_style_shadow_width(g_recorder.wifi_scan_btn, 8, LV_PART_MAIN);
+  lv_obj_set_style_shadow_color(g_recorder.wifi_scan_btn,
+                                lv_color_hex(0x22D3EE), LV_PART_MAIN);
+  lv_obj_set_style_shadow_opa(g_recorder.wifi_scan_btn, LV_OPA_30,
+                              LV_PART_MAIN);
+  lv_obj_add_event_cb(g_recorder.wifi_scan_btn, wifi_scan_btn_cb,
+                      LV_EVENT_CLICKED, NULL);
+
+  g_recorder.wifi_scan_btn_label = lv_label_create(g_recorder.wifi_scan_btn);
+  lv_label_set_text(g_recorder.wifi_scan_btn_label,
+                    LV_SYMBOL_REFRESH " Scan for Networks");
+  lv_obj_set_style_text_color(g_recorder.wifi_scan_btn_label,
+                              lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.wifi_scan_btn_label,
+                             &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_center(g_recorder.wifi_scan_btn_label);
+
+  // Network list
+  g_recorder.wifi_network_list = lv_list_create(g_recorder.wifi_config_screen);
+  lv_obj_set_size(g_recorder.wifi_network_list, LV_PCT(90), LV_PCT(65));
+  lv_obj_align(g_recorder.wifi_network_list, LV_ALIGN_TOP_MID, 0, 110);
+  lv_obj_set_style_bg_color(g_recorder.wifi_network_list,
+                            lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.wifi_network_list, LV_OPA_80,
+                          LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_network_list, 12, LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.wifi_network_list, 1, LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.wifi_network_list,
+                                lv_color_hex(0x334155), LV_PART_MAIN);
+  lv_obj_set_style_pad_all(g_recorder.wifi_network_list, 5, LV_PART_MAIN);
+
+  lv_obj_t *placeholder =
+      lv_list_add_btn(g_recorder.wifi_network_list, LV_SYMBOL_WIFI,
+                      "Tap Scan to find networks");
+  lv_obj_set_style_bg_color(placeholder, lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_text_color(placeholder, lv_color_hex(0x94A3B8),
+                              LV_PART_MAIN);
+
+  // Password popup
+  g_recorder.wifi_popup = lv_obj_create(g_recorder.wifi_config_screen);
+  lv_obj_set_size(g_recorder.wifi_popup, LV_PCT(90), 180);
+  lv_obj_align(g_recorder.wifi_popup, LV_ALIGN_CENTER, 0, -40);
+  lv_obj_set_style_bg_color(g_recorder.wifi_popup, lv_color_hex(0x1E293B),
+                            LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.wifi_popup, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_popup, 16, LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.wifi_popup, 2, LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.wifi_popup, lv_color_hex(0x22D3EE),
+                                LV_PART_MAIN);
+  lv_obj_set_style_shadow_width(g_recorder.wifi_popup, 20, LV_PART_MAIN);
+  lv_obj_set_style_shadow_color(g_recorder.wifi_popup, lv_color_hex(0x000000),
+                                LV_PART_MAIN);
+  lv_obj_set_style_shadow_opa(g_recorder.wifi_popup, LV_OPA_50, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(g_recorder.wifi_popup, 15, LV_PART_MAIN);
+  lv_obj_clear_flag(g_recorder.wifi_popup, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(g_recorder.wifi_popup, LV_OBJ_FLAG_HIDDEN);
+
+  g_recorder.wifi_close_btn = lv_btn_create(g_recorder.wifi_popup);
+  lv_obj_set_size(g_recorder.wifi_close_btn, 36, 36);
+  lv_obj_align(g_recorder.wifi_close_btn, LV_ALIGN_TOP_LEFT, -5, -5);
+  lv_obj_set_style_bg_color(g_recorder.wifi_close_btn, lv_color_hex(0xEF4444),
+                            LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_close_btn, 18, LV_PART_MAIN);
+  lv_obj_add_event_cb(g_recorder.wifi_close_btn, wifi_close_popup_cb,
+                      LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *close_label = lv_label_create(g_recorder.wifi_close_btn);
+  lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
+  lv_obj_set_style_text_color(close_label, lv_color_hex(0xF1F5F9),
+                              LV_PART_MAIN);
+  lv_obj_center(close_label);
+
+  g_recorder.wifi_popup_title = lv_label_create(g_recorder.wifi_popup);
+  lv_label_set_text(g_recorder.wifi_popup_title, "Enter Password");
+  lv_obj_set_style_text_color(g_recorder.wifi_popup_title,
+                              lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.wifi_popup_title,
+                             &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_align(g_recorder.wifi_popup_title, LV_ALIGN_TOP_MID, 0, 5);
+  lv_label_set_long_mode(g_recorder.wifi_popup_title,
+                         LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_width(g_recorder.wifi_popup_title, LV_PCT(80));
+
+  lv_obj_t *input_row = lv_obj_create(g_recorder.wifi_popup);
+  lv_obj_set_size(input_row, LV_PCT(100), 45);
+  lv_obj_align(input_row, LV_ALIGN_TOP_MID, 0, 40);
+  lv_obj_set_style_bg_opa(input_row, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(input_row, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(input_row, 0, LV_PART_MAIN);
+  lv_obj_clear_flag(input_row, LV_OBJ_FLAG_SCROLLABLE);
+
+  g_recorder.wifi_password_input = lv_textarea_create(input_row);
+  lv_obj_set_size(g_recorder.wifi_password_input, LV_PCT(80), 40);
+  lv_obj_align(g_recorder.wifi_password_input, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_textarea_set_placeholder_text(g_recorder.wifi_password_input,
+                                   "Enter password...");
+  lv_textarea_set_password_mode(g_recorder.wifi_password_input, true);
+  lv_textarea_set_one_line(g_recorder.wifi_password_input, true);
+  lv_obj_set_style_bg_color(g_recorder.wifi_password_input,
+                            lv_color_hex(0x0A1628), LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.wifi_password_input,
+                              lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_set_style_border_color(g_recorder.wifi_password_input,
+                                lv_color_hex(0x22D3EE), LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.wifi_password_input, 2,
+                                LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_password_input, 8, LV_PART_MAIN);
+  lv_obj_add_event_cb(g_recorder.wifi_password_input, wifi_password_focus_cb,
+                      LV_EVENT_ALL, NULL);
+
+  g_recorder.wifi_password_toggle_btn = lv_btn_create(input_row);
+  lv_obj_set_size(g_recorder.wifi_password_toggle_btn, 40, 40);
+  lv_obj_align(g_recorder.wifi_password_toggle_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_set_style_bg_color(g_recorder.wifi_password_toggle_btn,
+                            lv_color_hex(0x0A1628), LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_password_toggle_btn, 8, LV_PART_MAIN);
+  lv_obj_add_event_cb(g_recorder.wifi_password_toggle_btn,
+                      wifi_password_toggle_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *toggle_label = lv_label_create(g_recorder.wifi_password_toggle_btn);
+  lv_label_set_text(toggle_label, LV_SYMBOL_EYE_CLOSE);
+  lv_obj_set_style_text_color(toggle_label, lv_color_hex(0xF1F5F9),
+                              LV_PART_MAIN);
+  lv_obj_center(toggle_label);
+
+  g_recorder.wifi_password_visible = FALSE;
+
+  g_recorder.wifi_connect_btn = lv_btn_create(g_recorder.wifi_popup);
+  lv_obj_set_size(g_recorder.wifi_connect_btn, LV_PCT(100), 45);
+  lv_obj_align(g_recorder.wifi_connect_btn, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_bg_color(g_recorder.wifi_connect_btn, lv_color_hex(0x10B981),
+                            LV_PART_MAIN);
+  lv_obj_set_style_radius(g_recorder.wifi_connect_btn, 8, LV_PART_MAIN);
+  lv_obj_add_event_cb(g_recorder.wifi_connect_btn, wifi_connect_btn_cb,
+                      LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *connect_label = lv_label_create(g_recorder.wifi_connect_btn);
+  lv_label_set_text(connect_label, LV_SYMBOL_OK " Connect");
+  lv_obj_set_style_text_color(connect_label, lv_color_hex(0xF1F5F9),
+                              LV_PART_MAIN);
+  lv_obj_set_style_text_font(connect_label, &lv_font_montserrat_16,
+                             LV_PART_MAIN);
+  lv_obj_center(connect_label);
+
+  // Keyboard
+  g_recorder.wifi_keyboard = lv_keyboard_create(g_recorder.wifi_config_screen);
+  lv_obj_set_size(g_recorder.wifi_keyboard, LV_PCT(100), LV_PCT(45));
+  lv_obj_align(g_recorder.wifi_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_add_event_cb(g_recorder.wifi_keyboard, wifi_keyboard_event_cb,
+                      LV_EVENT_ALL, NULL);
+  lv_obj_add_flag(g_recorder.wifi_keyboard, LV_OBJ_FLAG_HIDDEN);
+
+  // WiFi Checking Overlay
+  g_recorder.wifi_checking_overlay =
+      lv_obj_create(g_recorder.wifi_config_screen);
+  lv_obj_set_size(g_recorder.wifi_checking_overlay, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_bg_color(g_recorder.wifi_checking_overlay,
+                            lv_color_hex(0x0A1628), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(g_recorder.wifi_checking_overlay, LV_OPA_COVER,
+                          LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.wifi_checking_overlay, 0,
+                                LV_PART_MAIN);
+  lv_obj_add_flag(g_recorder.wifi_checking_overlay, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(g_recorder.wifi_checking_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *spinner = lv_spinner_create(g_recorder.wifi_checking_overlay);
+  lv_spinner_set_anim_params(spinner, 1000, 60);
+  lv_obj_set_size(spinner, 80, 80);
+  lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -30);
+  lv_obj_set_style_arc_color(spinner, lv_color_hex(0x22D3EE),
+                             LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 8, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(spinner, 8, LV_PART_INDICATOR);
+
+  g_recorder.wifi_checking_label =
+      lv_label_create(g_recorder.wifi_checking_overlay);
+  lv_label_set_text(g_recorder.wifi_checking_label,
+                    "Checking for connected\nWiFi networks...");
+  lv_obj_set_style_text_color(g_recorder.wifi_checking_label,
+                              lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_set_style_text_font(g_recorder.wifi_checking_label,
+                             &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_align(g_recorder.wifi_checking_label,
+                              LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_align(g_recorder.wifi_checking_label, LV_ALIGN_CENTER, 0, 50);
+
+  // Initialize WiFi state
+  g_recorder.wifi_state = WIFI_STATE_DISCONNECTED;
+  g_recorder.wifi_network_count = 0;
+  g_recorder.wifi_selected_network_idx = 0;
+  g_recorder.wifi_selected_ssid[0] = '\0';
+  g_recorder.wifi_connected_ssid[0] = '\0';
+  g_recorder.wifi_password[0] = '\0';
+}
+
+// Show WiFi configuration screen
+static void show_wifi_config_screen(BOOL_T show_checking) {
+  g_recorder.current_screen = SCREEN_WIFI_CONFIG;
+
+  if (show_checking) {
+    lv_obj_clear_flag(g_recorder.wifi_checking_overlay, LV_OBJ_FLAG_HIDDEN);
+    g_recorder.wifi_checking_start_time = tal_system_get_tick_count();
+    PR_NOTICE("[WIFI] Set checking start time: %u",
+              (unsigned int)g_recorder.wifi_checking_start_time);
+  } else {
+    lv_obj_add_flag(g_recorder.wifi_checking_overlay, LV_OBJ_FLAG_HIDDEN);
+    g_recorder.wifi_checking_start_time = 0;
+  }
+
+  lv_scr_load(g_recorder.wifi_config_screen);
+}
+
+// =================================================================
+// SETTINGS SCREEN
+// =================================================================
+
+static void settings_wifi_btn_cb(lv_event_t *e) {
+  (void)e;
+  PR_NOTICE("[UI] Settings -> WiFi button clicked");
+  show_wifi_config_screen(FALSE);
+}
+
+static void settings_saved_networks_btn_cb(lv_event_t *e) {
+  (void)e;
+  PR_NOTICE("[UI] Settings -> Saved Networks button clicked");
+  show_saved_networks_screen();
+}
+
+static void settings_back_btn_cb(lv_event_t *e) {
+  (void)e;
+  PR_NOTICE("[UI] Settings -> Back button clicked");
+  show_main_screen();
+}
+
+static void create_settings_screen(void) {
+  g_recorder.settings_screen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(g_recorder.settings_screen, lv_color_hex(0x0F172A),
+                            LV_PART_MAIN);
+
+  // Header container
+  lv_obj_t *header = lv_obj_create(g_recorder.settings_screen);
+  lv_obj_set_size(header, LV_PCT(100), 50);
+  lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_color(header, lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_border_width(header, 0, LV_PART_MAIN);
+  lv_obj_set_style_radius(header, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(header, 0, LV_PART_MAIN);
+
+  // Back button
+  lv_obj_t *back_btn = lv_btn_create(header);
+  lv_obj_set_size(back_btn, 40, 40);
+  lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x334155), LV_PART_MAIN);
+  lv_obj_set_style_radius(back_btn, 8, LV_PART_MAIN);
+  lv_obj_add_event_cb(back_btn, settings_back_btn_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *back_icon = lv_label_create(back_btn);
+  lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+  lv_obj_set_style_text_font(back_icon, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(back_icon, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_center(back_icon);
+
+  // Title
+  lv_obj_t *title = lv_label_create(header);
+  lv_label_set_text(title, "Settings");
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+  // Content container
+  lv_obj_t *content = lv_obj_create(g_recorder.settings_screen);
+  lv_obj_set_size(content, LV_PCT(100), LV_PCT(100));
+  lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 55);
+  lv_obj_set_style_bg_color(content, lv_color_hex(0x0F172A), LV_PART_MAIN);
+  lv_obj_set_style_border_width(content, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(content, 15, LV_PART_MAIN);
+  lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(content, 10, LV_PART_MAIN);
+
+  // WiFi Settings Button
+  lv_obj_t *wifi_btn = lv_btn_create(content);
+  lv_obj_set_size(wifi_btn, LV_PCT(100), 60);
+  lv_obj_set_style_bg_color(wifi_btn, lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_radius(wifi_btn, 12, LV_PART_MAIN);
+  lv_obj_add_event_cb(wifi_btn, settings_wifi_btn_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *wifi_icon = lv_label_create(wifi_btn);
+  lv_label_set_text(wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_font(wifi_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(wifi_icon, lv_color_hex(0x38BDF8), LV_PART_MAIN);
+  lv_obj_align(wifi_icon, LV_ALIGN_LEFT_MID, 15, 0);
+
+  lv_obj_t *wifi_label = lv_label_create(wifi_btn);
+  lv_label_set_text(wifi_label, "WiFi Configuration");
+  lv_obj_set_style_text_font(wifi_label, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(wifi_label, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_align(wifi_label, LV_ALIGN_LEFT_MID, 55, 0);
+
+  lv_obj_t *wifi_arrow = lv_label_create(wifi_btn);
+  lv_label_set_text(wifi_arrow, LV_SYMBOL_RIGHT);
+  lv_obj_set_style_text_font(wifi_arrow, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(wifi_arrow, lv_color_hex(0x64748B), LV_PART_MAIN);
+  lv_obj_align(wifi_arrow, LV_ALIGN_RIGHT_MID, -15, 0);
+
+  // Saved Networks Button
+  lv_obj_t *saved_btn = lv_btn_create(content);
+  lv_obj_set_size(saved_btn, LV_PCT(100), 60);
+  lv_obj_set_style_bg_color(saved_btn, lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_radius(saved_btn, 12, LV_PART_MAIN);
+  lv_obj_add_event_cb(saved_btn, settings_saved_networks_btn_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *saved_icon = lv_label_create(saved_btn);
+  lv_label_set_text(saved_icon, LV_SYMBOL_SD_CARD);
+  lv_obj_set_style_text_font(saved_icon, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(saved_icon, lv_color_hex(0xA78BFA), LV_PART_MAIN);
+  lv_obj_align(saved_icon, LV_ALIGN_LEFT_MID, 15, 0);
+
+  lv_obj_t *saved_label = lv_label_create(saved_btn);
+  lv_label_set_text(saved_label, "Saved Networks");
+  lv_obj_set_style_text_font(saved_label, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(saved_label, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_align(saved_label, LV_ALIGN_LEFT_MID, 55, 0);
+
+  lv_obj_t *saved_arrow = lv_label_create(saved_btn);
+  lv_label_set_text(saved_arrow, LV_SYMBOL_RIGHT);
+  lv_obj_set_style_text_font(saved_arrow, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(saved_arrow, lv_color_hex(0x64748B), LV_PART_MAIN);
+  lv_obj_align(saved_arrow, LV_ALIGN_RIGHT_MID, -15, 0);
+}
+
+static void show_settings_screen(void) {
+  g_recorder.current_screen = SCREEN_SETTINGS;
+  lv_scr_load(g_recorder.settings_screen);
+}
+
+// =================================================================
+// SAVED NETWORKS SCREEN
+// =================================================================
+
+static void saved_networks_back_btn_cb(lv_event_t *e) {
+  (void)e;
+  PR_NOTICE("[UI] Saved Networks -> Back button clicked");
+  show_settings_screen();
+}
+
+static void saved_networks_forget_btn_cb(lv_event_t *e) {
+  (void)e;
+  PR_NOTICE("[UI] Forget network button clicked");
+
+  // Delete saved credentials from local storage
+  tal_kv_del("wifi_ssid");
+  tal_kv_del("wifi_pass");
+
+  // Clear the database verified flag so we don't use stale data
+  tal_kv_del("wifi_db_verified");
+
+  // Update state
+  g_recorder.wifi_configured = FALSE;
+  g_recorder.wifi_selected_ssid[0] = '\0';
+  g_recorder.wifi_password[0] = '\0';
+
+  // If currently connected to this network, disconnect
+  if (g_recorder.wifi_state == WIFI_STATE_CONNECTED) {
+    PR_NOTICE("[WIFI] Disconnecting from forgotten network");
+    tal_wifi_station_disconnect();
+    g_recorder.wifi_state = WIFI_STATE_DISCONNECTED;
+    g_recorder.wifi_connected_ssid[0] = '\0';
+    g_net_connected = FALSE;
+  }
+
+  PR_NOTICE("[WIFI] Network forgotten successfully");
+
+  // Refresh the list
+  refresh_saved_networks_list();
+}
+
+static void refresh_saved_networks_list(void) {
+  if (g_recorder.saved_networks_list == NULL) return;
+
+  // Clear existing items
+  lv_obj_clean(g_recorder.saved_networks_list);
+
+  // Check for saved credentials
+  char saved_ssid[MAX_SSID_LEN + 1] = {0};
+  char saved_password[MAX_PASSWORD_LEN + 1] = {0};
+  BOOL_T has_saved = wifi_load_credentials(saved_ssid, saved_password);
+
+  if (has_saved && saved_ssid[0] != '\0') {
+    // Hide empty label
+    lv_obj_add_flag(g_recorder.saved_networks_empty_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Create network item
+    lv_obj_t *item = lv_obj_create(g_recorder.saved_networks_list);
+    lv_obj_set_size(item, LV_PCT(100), 70);
+    lv_obj_set_style_bg_color(item, lv_color_hex(0x1E293B), LV_PART_MAIN);
+    lv_obj_set_style_radius(item, 12, LV_PART_MAIN);
+    lv_obj_set_style_border_width(item, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(item, 10, LV_PART_MAIN);
+
+    // WiFi icon
+    lv_obj_t *icon = lv_label_create(item);
+    lv_label_set_text(icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_24, LV_PART_MAIN);
+    lv_obj_set_style_text_color(icon, lv_color_hex(0x38BDF8), LV_PART_MAIN);
+    lv_obj_align(icon, LV_ALIGN_LEFT_MID, 5, 0);
+
+    // Network name
+    lv_obj_t *name_label = lv_label_create(item);
+    lv_label_set_text(name_label, saved_ssid);
+    lv_obj_set_style_text_font(name_label, &lv_font_montserrat_16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(name_label, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+    lv_obj_align(name_label, LV_ALIGN_LEFT_MID, 45, -8);
+
+    // "Saved" subtitle
+    lv_obj_t *subtitle = lv_label_create(item);
+    lv_label_set_text(subtitle, "Saved");
+    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(subtitle, lv_color_hex(0x64748B), LV_PART_MAIN);
+    lv_obj_align(subtitle, LV_ALIGN_LEFT_MID, 45, 10);
+
+    // Forget button
+    lv_obj_t *forget_btn = lv_btn_create(item);
+    lv_obj_set_size(forget_btn, 70, 35);
+    lv_obj_set_style_bg_color(forget_btn, lv_color_hex(0xDC2626), LV_PART_MAIN);
+    lv_obj_set_style_radius(forget_btn, 8, LV_PART_MAIN);
+    lv_obj_align(forget_btn, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_add_event_cb(forget_btn, saved_networks_forget_btn_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *forget_label = lv_label_create(forget_btn);
+    lv_label_set_text(forget_label, "Forget");
+    lv_obj_set_style_text_font(forget_label, &lv_font_montserrat_14, LV_PART_MAIN);
+    lv_obj_set_style_text_color(forget_label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_center(forget_label);
+
+  } else {
+    // Show empty label
+    lv_obj_clear_flag(g_recorder.saved_networks_empty_label, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void create_saved_networks_screen(void) {
+  g_recorder.saved_networks_screen = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(g_recorder.saved_networks_screen, lv_color_hex(0x0F172A),
+                            LV_PART_MAIN);
+
+  // Header container
+  lv_obj_t *header = lv_obj_create(g_recorder.saved_networks_screen);
+  lv_obj_set_size(header, LV_PCT(100), 50);
+  lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+  lv_obj_set_style_bg_color(header, lv_color_hex(0x1E293B), LV_PART_MAIN);
+  lv_obj_set_style_border_width(header, 0, LV_PART_MAIN);
+  lv_obj_set_style_radius(header, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(header, 0, LV_PART_MAIN);
+
+  // Back button
+  lv_obj_t *back_btn = lv_btn_create(header);
+  lv_obj_set_size(back_btn, 40, 40);
+  lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x334155), LV_PART_MAIN);
+  lv_obj_set_style_radius(back_btn, 8, LV_PART_MAIN);
+  lv_obj_add_event_cb(back_btn, saved_networks_back_btn_cb, LV_EVENT_CLICKED, NULL);
+
+  lv_obj_t *back_icon = lv_label_create(back_btn);
+  lv_label_set_text(back_icon, LV_SYMBOL_LEFT);
+  lv_obj_set_style_text_font(back_icon, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(back_icon, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_center(back_icon);
+
+  // Title
+  lv_obj_t *title = lv_label_create(header);
+  lv_label_set_text(title, "Saved Networks");
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_24, LV_PART_MAIN);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xF1F5F9), LV_PART_MAIN);
+  lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+  // Content container (scrollable list)
+  g_recorder.saved_networks_list = lv_obj_create(g_recorder.saved_networks_screen);
+  lv_obj_set_size(g_recorder.saved_networks_list, LV_PCT(100), LV_PCT(100));
+  lv_obj_align(g_recorder.saved_networks_list, LV_ALIGN_TOP_MID, 0, 55);
+  lv_obj_set_style_bg_color(g_recorder.saved_networks_list, lv_color_hex(0x0F172A), LV_PART_MAIN);
+  lv_obj_set_style_border_width(g_recorder.saved_networks_list, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(g_recorder.saved_networks_list, 15, LV_PART_MAIN);
+  lv_obj_set_flex_flow(g_recorder.saved_networks_list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(g_recorder.saved_networks_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(g_recorder.saved_networks_list, 10, LV_PART_MAIN);
+
+  // Empty state label
+  g_recorder.saved_networks_empty_label = lv_label_create(g_recorder.saved_networks_screen);
+  lv_label_set_text(g_recorder.saved_networks_empty_label, "No saved networks");
+  lv_obj_set_style_text_font(g_recorder.saved_networks_empty_label, &lv_font_montserrat_16, LV_PART_MAIN);
+  lv_obj_set_style_text_color(g_recorder.saved_networks_empty_label, lv_color_hex(0x64748B), LV_PART_MAIN);
+  lv_obj_align(g_recorder.saved_networks_empty_label, LV_ALIGN_CENTER, 0, 20);
+  lv_obj_add_flag(g_recorder.saved_networks_empty_label, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void show_saved_networks_screen(void) {
+  g_recorder.current_screen = SCREEN_SAVED_NETWORKS;
+  refresh_saved_networks_list();
+  lv_scr_load(g_recorder.saved_networks_screen);
+}
+
+// Load WiFi credentials from KV storage
+static BOOL_T wifi_load_credentials(char *ssid, char *password) {
+  uint8_t *ssid_value = NULL;
+  uint8_t *pass_value = NULL;
+  size_t ssid_len = 0;
+  size_t pass_len = 0;
+
+  OPERATE_RET ret1 = tal_kv_get("wifi_ssid", &ssid_value, &ssid_len);
+  OPERATE_RET ret2 = tal_kv_get("wifi_pass", &pass_value, &pass_len);
+
+  BOOL_T success = FALSE;
+  if (ret1 == OPRT_OK && ret2 == OPRT_OK && ssid_len > 0 && pass_len > 0) {
+    if (ssid_len <= MAX_SSID_LEN + 1 && pass_len <= MAX_PASSWORD_LEN + 1) {
+      memcpy(ssid, ssid_value, ssid_len);
+      memcpy(password, pass_value, pass_len);
+      ssid[ssid_len - 1] = '\0';     // Ensure null termination
+      password[pass_len - 1] = '\0'; // Ensure null termination
+      PR_NOTICE("Loaded WiFi credentials: SSID='%s'", ssid);
+      success = TRUE;
+    }
+  }
+
+  if (ssid_value) {
+    tal_kv_free(ssid_value);
+  }
+  if (pass_value) {
+    tal_kv_free(pass_value);
+  }
+
+  return success;
+}
+
+// Save WiFi credentials to KV storage
+static void wifi_save_credentials(const char *ssid, const char *password) {
+  tal_kv_set("wifi_ssid", (const uint8_t *)ssid, strlen(ssid) + 1);
+  tal_kv_set("wifi_pass", (const uint8_t *)password, strlen(password) + 1);
+  PR_NOTICE("Saved WiFi credentials to local storage: SSID='%s'", ssid);
+}
+
+// Load WiFi credentials from cloud (Supabase)
+static BOOL_T wifi_load_credentials_from_cloud(char *ssid, char *password) {
+  if (!g_net_connected) {
+    PR_DEBUG("[WIFI] Cannot load from cloud - no network connection");
+    return FALSE;
+  }
+
+  const char *dev_id = DEVICE_UUID;
+  http_client_response_t response = {0};
+  http_client_header_t headers[] = {
+      {.key = "Content-Type", .value = "application/json"},
+      {.key = "X-User-ID", .value = dev_id}};
+
+  http_client_status_t status = http_client_request(
+      &(const http_client_request_t){.host = CLOUD_BACKEND_HOST,
+                                     .port = CLOUD_BACKEND_PORT,
+                                     .path = "/api/device/wifi-network",
+                                     .cacert = NULL,
+                                     .cacert_len = 0,
+                                     .method = "GET",
+                                     .headers = headers,
+                                     .headers_count = 2,
+                                     .body = NULL,
+                                     .body_length = 0,
+                                     .timeout_ms = 5000},
+      &response);
+
+  BOOL_T success = FALSE;
+  if (status == HTTP_CLIENT_SUCCESS && response.status_code == 200) {
+    if (response.body && response.body_length > 0) {
+      cJSON *root = cJSON_Parse((char *)response.body);
+      if (root) {
+        cJSON *has_network = cJSON_GetObjectItem(root, "has_network");
+        if (has_network && cJSON_IsTrue(has_network)) {
+          cJSON *ssid_json = cJSON_GetObjectItem(root, "ssid");
+          cJSON *password_json = cJSON_GetObjectItem(root, "password");
+          if (ssid_json && password_json) {
+            const char *ssid_str = cJSON_GetStringValue(ssid_json);
+            const char *password_str = cJSON_GetStringValue(password_json);
+            if (ssid_str && password_str) {
+              strncpy(ssid, ssid_str, MAX_SSID_LEN);
+              strncpy(password, password_str, MAX_PASSWORD_LEN);
+              ssid[MAX_SSID_LEN] = '\0';
+              password[MAX_PASSWORD_LEN] = '\0';
+              PR_NOTICE("[WIFI] Loaded WiFi credentials from cloud: SSID='%s'",
+                        ssid);
+              success = TRUE;
+            }
+          }
+        }
+        cJSON_Delete(root);
+      }
+    }
+  } else {
+    PR_DEBUG("[WIFI] Failed to load from cloud: status=%d, code=%d", status,
+             response.status_code);
+  }
+
+  http_client_free(&response);
+  return success;
+}
+
+// Save WiFi credentials to cloud (Supabase)
+static void wifi_save_credentials_to_cloud(const char *ssid,
+                                           const char *password) {
+  PR_NOTICE("[WIFI] Attempting to save WiFi credentials to cloud: SSID='%s', "
+            "net_connected=%d",
+            ssid, g_net_connected);
+
+  if (!g_net_connected) {
+    PR_ERR("[WIFI] Cannot save to cloud - no network connection "
+           "(g_net_connected=%d), saving locally only",
+           g_net_connected);
+    wifi_save_credentials(ssid, password);
+    return;
+  }
+
+  if (!ssid || strlen(ssid) == 0) {
+    PR_ERR("[WIFI] Cannot save to cloud - invalid SSID");
+    wifi_save_credentials(ssid, password);
+    return;
+  }
+
+  const char *dev_id = DEVICE_UUID;
+
+  // Escape JSON strings properly (handle quotes and special chars)
+  // Simple approach: replace " with \", \ with \\, and newlines
+  char escaped_ssid[MAX_SSID_LEN * 2 + 1] = {0};
+  char escaped_password[MAX_PASSWORD_LEN * 2 + 1] = {0};
+
+  // Escape SSID
+  int j = 0;
+  for (int i = 0; ssid[i] != '\0' && j < sizeof(escaped_ssid) - 1; i++) {
+    if (ssid[i] == '"' || ssid[i] == '\\') {
+      if (j < sizeof(escaped_ssid) - 2) {
+        escaped_ssid[j++] = '\\';
+        escaped_ssid[j++] = ssid[i];
+      }
+    } else if (ssid[i] >= 32 && ssid[i] < 127) { // Printable ASCII only
+      escaped_ssid[j++] = ssid[i];
+    }
+  }
+  escaped_ssid[j] = '\0';
+
+  // Escape password
+  j = 0;
+  for (int i = 0; password[i] != '\0' && j < sizeof(escaped_password) - 1;
+       i++) {
+    if (password[i] == '"' || password[i] == '\\') {
+      if (j < sizeof(escaped_password) - 2) {
+        escaped_password[j++] = '\\';
+        escaped_password[j++] = password[i];
+      }
+    } else if (password[i] >= 32 && password[i] < 127) { // Printable ASCII only
+      escaped_password[j++] = password[i];
+    }
+  }
+  escaped_password[j] = '\0';
+
+  char body[512];
+  snprintf(body, sizeof(body), "{\"ssid\":\"%s\",\"password\":\"%s\"}",
+           escaped_ssid, escaped_password);
+  PR_DEBUG("[WIFI] Request body: %s", body);
+
+  http_client_response_t response = {0};
+  http_client_header_t headers[] = {
+      {.key = "Content-Type", .value = "application/json"},
+      {.key = "X-User-ID", .value = dev_id}};
+
+  PR_NOTICE("[WIFI] Sending POST to %s:%d%s", CLOUD_BACKEND_HOST,
+            CLOUD_BACKEND_PORT, "/api/device/wifi-network");
+  http_client_status_t status = http_client_request(
+      &(const http_client_request_t){
+          .host = CLOUD_BACKEND_HOST,
+          .port = CLOUD_BACKEND_PORT,
+          .path = "/api/device/wifi-network",
+          .cacert = NULL,
+          .cacert_len = 0,
+          .method = "POST",
+          .headers = headers,
+          .headers_count = 2,
+          .body = (uint8_t *)body,
+          .body_length = strlen(body),
+          .timeout_ms = 10000 // Increased timeout
+      },
+      &response);
+
+  PR_NOTICE("[WIFI] HTTP response: status=%d, code=%d", status,
+            response.status_code);
+
+  if (response.body && response.body_length > 0) {
+    PR_NOTICE("[WIFI] Response body: %.*s", (int)response.body_length,
+              response.body);
+  }
+
+  if (status == HTTP_CLIENT_SUCCESS && response.status_code == 200) {
+    PR_NOTICE("[WIFI] Successfully saved WiFi credentials to cloud: SSID='%s'",
+              ssid);
+  } else {
+    PR_ERR("[WIFI] Failed to save to cloud: HTTP status=%d, response code=%d",
+           status, response.status_code);
+    if (response.body && response.body_length > 0) {
+      PR_ERR("[WIFI] Error response: %.*s", (int)response.body_length,
+             response.body);
+    }
+  }
+
+  http_client_free(&response);
+
+  // Always save locally as backup
+  wifi_save_credentials(ssid, password);
+}
+
 static void create_main_ui(void) {
   g_recorder.recording_count = 0;
   g_recorder.current_screen = SCREEN_MAIN;
@@ -4143,12 +5817,17 @@ static void create_main_ui(void) {
   create_select_sheet_screen();
   create_analysis_result_screen();
   create_playback_screen();
+  create_wifi_config_screen();
+  create_settings_screen();
+  create_saved_networks_screen();
 
   // Create loading overlay (appears on top of all screens)
   create_loading_overlay();
 
-  // Show main screen
-  show_main_screen();
+  // Initially show WiFi config screen with "Checking..." overlay
+  // WiFi credentials are checked after KV storage is initialized in
+  // user_main()
+  show_wifi_config_screen(TRUE);
 }
 
 // =================================================================
@@ -4208,64 +5887,90 @@ void user_main(void) {
     PR_NOTICE("[WIFI] netmgr_init OK");
   }
 
-  // Connect to WiFi using network manager
-  PR_NOTICE("[WIFI] Connecting to WiFi...");
-  PR_NOTICE("[WIFI]   SSID: '%s'", USER_SSID);
-  PR_NOTICE("[WIFI]   Password: '%s'", USER_PASSWORD);
-  netconn_wifi_info_t wifi_info = {0};
-  strcpy(wifi_info.ssid, USER_SSID);
-  strcpy(wifi_info.pswd, USER_PASSWORD);
-  netmgr_conn_set(NETCONN_WIFI, NETCONN_CMD_SSID_PSWD, &wifi_info);
-  PR_NOTICE("[WIFI] WiFi connection initiated (async)");
-
-  // Wait for WiFi connection (up to 30 seconds)
-  PR_NOTICE("[WIFI] Waiting for connection (max 30 sec)...");
-  WF_STATION_STAT_E wifi_stat = WSS_IDLE;
-  int wifi_wait = 0;
-  while (wifi_wait < 300) { // 30 seconds max (300 * 100ms)
-    tal_wifi_station_get_status(&wifi_stat);
-    if (wifi_stat == WSS_GOT_IP) {
-      PR_NOTICE("[WIFI] *** CONNECTED! Got IP address ***");
-      g_net_connected = TRUE;
-      break;
-    }
-    if (wifi_wait % 10 == 0) { // Log every second
-      const char *stat_str = "UNKNOWN";
-      switch (wifi_stat) {
-      case WSS_IDLE:
-        stat_str = "IDLE";
-        break;
-      case WSS_CONNECTING:
-        stat_str = "CONNECTING";
-        break;
-      case WSS_PASSWD_WRONG:
-        stat_str = "PASSWD_WRONG";
-        break;
-      case WSS_NO_AP_FOUND:
-        stat_str = "NO_AP_FOUND";
-        break;
-      case WSS_CONN_FAIL:
-        stat_str = "CONN_FAIL";
-        break;
-      case WSS_GOT_IP:
-        stat_str = "GOT_IP";
-        break;
-      default:
-        break;
-      }
-      PR_DEBUG("[WIFI] Status: %s (%d) - waiting %d sec...", stat_str,
-               wifi_stat, wifi_wait / 10);
-    }
-    tal_system_sleep(100);
-    wifi_wait++;
+  // Initialize WiFi with event callback
+  PR_NOTICE("[WIFI] Initializing WiFi...");
+  ret = tal_wifi_init(wifi_event_callback);
+  if (ret != OPRT_OK) {
+    PR_ERR("[WIFI] tal_wifi_init FAILED: %d", ret);
+  } else {
+    PR_NOTICE("[WIFI] tal_wifi_init OK");
   }
 
-  if (wifi_stat != WSS_GOT_IP) {
-    PR_ERR("[WIFI] *** CONNECTION FAILED after 30 seconds ***");
-    PR_ERR("[WIFI] Final status: %d", wifi_stat);
-    PR_ERR("[WIFI] Check: Is hotspot ON? Is SSID '%s' correct? Is password "
-           "'%s' correct?",
-           USER_SSID, USER_PASSWORD);
+  ret = tal_wifi_set_work_mode(WWM_STATION);
+  if (ret != OPRT_OK) {
+    PR_ERR("[WIFI] Set station mode failed: %d", ret);
+  }
+
+  // Check for saved WiFi credentials
+  // Database is the source of truth - only use local KV if database hasn't
+  // been verified yet
+  char saved_ssid[MAX_SSID_LEN + 1] = {0};
+  char saved_password[MAX_PASSWORD_LEN + 1] = {0};
+  BOOL_T has_local_credentials =
+      wifi_load_credentials(saved_ssid, saved_password);
+
+  // Check if we have a flag indicating database was previously verified as
+  // empty If so, don't use local credentials (they're stale)
+  uint8_t *db_verified_flag = NULL;
+  size_t db_verified_len = 0;
+  OPERATE_RET db_check =
+      tal_kv_get("wifi_db_verified", &db_verified_flag, &db_verified_len);
+  if (db_check == OPRT_OK && db_verified_flag && db_verified_len > 0) {
+    // Database was previously checked - if flag says empty, don't use local
+    // KV
+    if (db_verified_flag[0] == '0') { // '0' = database empty
+      PR_NOTICE("[WIFI] Database was previously verified as empty, clearing "
+                "local credentials");
+      if (has_local_credentials) {
+        tal_kv_del("wifi_ssid");
+        tal_kv_del("wifi_pass");
+        has_local_credentials = FALSE;
+      }
+    }
+    if (db_verified_flag) {
+      tal_kv_free(db_verified_flag);
+    }
+  }
+
+  // Try to connect using local credentials only if we have them and database
+  // hasn't been verified as empty After connection, we'll check cloud and use
+  // cloud credentials going forward
+  if (has_local_credentials) {
+    PR_NOTICE("[WIFI] Found local credentials, attempting initial connection "
+              "to '%s'...",
+              saved_ssid);
+    PR_NOTICE("[WIFI] Will verify with database after connection");
+
+    // Store credentials in recorder
+    strncpy(g_recorder.wifi_selected_ssid, saved_ssid, MAX_SSID_LEN);
+    strncpy(g_recorder.wifi_password, saved_password, MAX_PASSWORD_LEN);
+    g_recorder.wifi_state = WIFI_STATE_CONNECTING;
+
+    // Use both netmgr and tal_wifi for connection
+    netconn_wifi_info_t wifi_info = {0};
+    strcpy(wifi_info.ssid, saved_ssid);
+    strcpy(wifi_info.pswd, saved_password);
+    netmgr_conn_set(NETCONN_WIFI, NETCONN_CMD_SSID_PSWD, &wifi_info);
+
+    OPERATE_RET wifi_ret = tal_wifi_station_connect((int8_t *)saved_ssid,
+                                                    (int8_t *)saved_password);
+    if (wifi_ret != OPRT_OK) {
+      g_recorder.wifi_configured = FALSE;
+      // Connection failed, hide overlay so user can see scanning UI
+      show_wifi_config_screen(FALSE);
+    } else {
+      PR_NOTICE("[WIFI] Initial connection initiated, will verify with "
+                "database after connection");
+      // Don't switch screen yet - wait for connection, then check cloud
+      g_recorder.wifi_configured =
+          TRUE; // Temporary, will be updated after cloud check
+    }
+  } else {
+    PR_NOTICE("[WIFI] No local credentials found, WiFi configuration required");
+    g_recorder.wifi_configured = FALSE;
+    g_recorder.wifi_state = WIFI_STATE_DISCONNECTED;
+    // No credentials, hide overlay so user can see scanning UI
+    show_wifi_config_screen(FALSE);
   }
 
   // Initialize Tuya IoT SDK
@@ -4293,7 +5998,8 @@ void user_main(void) {
   if (ai_rt != OPRT_OK) {
     PR_ERR("[AI] voice_assistant_init FAILED: %d", ai_rt);
   } else {
-    PR_NOTICE("[AI] voice_assistant_init OK - press button to start conversation");
+    PR_NOTICE(
+        "[AI] voice_assistant_init OK - press button to start conversation");
     coach_ui_on_status("Press button to start conversation");
   }
 

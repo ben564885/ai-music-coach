@@ -69,34 +69,85 @@ Python Flask server for audio analysis and OMR:
 **Setup**: 
 1. `cd cloud-backend`
 2. `python3 -m venv venv`
-3. `source venv/bin/activate`
+3. `source venv/bin/activate` (or `venv\Scripts\activate` on Windows)
 4. `pip install -r requirements.txt`
-5. Set environment variables (see below)
-6. `python server.py`
+5. **Install Playwright browsers** (required for Samplab and SoundSlice automation):
+   ```bash
+   playwright install chromium
+   ```
+6. Set environment variables (see below)
+7. `python server.py`
 
 ## Environment Variables
 
 ### Cloud Backend
-Create `cloud-backend/.env` with:
-```bash
-# Supabase
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your-anon-key
+Create `cloud-backend/.env` with the following required API keys and credentials:
 
-# SoundSlice (for OMR automation)
+#### Required Services
+
+**1. Supabase (Database & Storage)**
+- Sign up at [supabase.com](https://supabase.com)
+- Create a new project
+- Get your project URL and service role key from Settings → API
+```bash
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-service-role-key
+SUPABASE_JWT_SECRET=your-jwt-secret  # Optional, for auth fallback
+```
+
+**2. Google Gemini AI (AI Coaching)**
+- Sign up at [Google AI Studio](https://makersuite.google.com/app/apikey)
+- Create a new API key
+- Free tier includes generous usage limits
+```bash
+GEMINI_API_KEY=your-gemini-api-key
+# OR (legacy name, both work)
+GOOGLE_API_KEY=your-gemini-api-key
+```
+
+#### Optional Services
+
+**3. SoundSlice (OMR - Optical Music Recognition)**
+- Sign up at [soundslice.com](https://www.soundslice.com)
+- Create an account and log in
+- Get API credentials from your account settings
+- Used for high-quality sheet music transcription (fallback to Gemini if not configured)
+```bash
 SOUNDSLICE_EMAIL=your-email@example.com
 SOUNDSLICE_PASSWORD=your-password
 SOUNDSLICE_APP_ID=your-app-id
-SOUNDSLICE_PASSWORD_TOKEN=your-password-token
+SOUNDSLICE_SECRET_KEY=your-secret-key
+```
 
-# AI Services
-GEMINI_API_KEY=your-gemini-api-key
-ROBOFLOW_API_KEY=your-roboflow-key (optional)
+**4. Roboflow (Alternative OMR)**
+- Sign up at [roboflow.com](https://roboflow.com)
+- Create a workspace and get your API key
+- Optional fallback for OMR if SoundSlice fails
+```bash
+ROBOFLOW_API_KEY=your-roboflow-key
+ROBOFLOW_WORKSPACE=your-workspace-name  # Optional, defaults to 'ben-d5iad'
+ROBOFLOW_WORKFLOW_ID=your-workflow-id   # Optional, defaults to 'detect-and-classify'
+```
 
-# Server
+**5. Samplab (Audio-to-MIDI Conversion)**
+- Sign up at [samplab.com](https://samplab.com)
+- Create a free account
+- Used to convert recorded audio performances to MIDI format for analysis
+```bash
+SAMPLAB_EMAIL=your-email@example.com
+SAMPLAB_PASSWORD=your-password
+```
+
+#### Server Configuration
+```bash
 FLASK_ENV=development
 PORT=5001
 ```
+
+**Note**: 
+- **Minimum required**: Supabase and Gemini API keys
+- **For sheet music upload**: SoundSlice credentials (recommended) or Roboflow API key (fallback)
+- **For audio recording analysis**: Samplab credentials (required to convert recordings to MIDI for comparison with sheet music)
 
 ### Mobile App
 Update `mobile_app_flutter/lib/utils/api_config.dart` with your backend URL (e.g., `http://192.168.1.100:5001`)

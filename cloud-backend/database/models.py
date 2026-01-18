@@ -116,3 +116,75 @@ class Device:
         known_fields = {f.name for f in fields(cls)}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
         return cls(**filtered_data)
+
+
+@dataclass
+class Analysis:
+    """Analysis model - stores AI feedback results for user performances"""
+    id: Optional[str] = None
+    user_id: str = ""
+    recording_id: Optional[str] = None
+    sheet_music_id: Optional[str] = None
+    score: int = 0  # 0-100 rating
+    strength: str = ""  # Main positive feedback (kept for backward compatibility)
+    improvement: str = ""  # Main area to improve (kept for backward compatibility)
+    feedback_points: Optional[List[Dict[str, Any]]] = None  # List of 6 feedback points with is_important flag
+    full_feedback: Optional[str] = None  # Complete feedback text
+    recording_title: Optional[str] = None
+    sheet_music_title: Optional[str] = None
+    status: str = "complete"  # "pending", "complete", "error"
+    created_at: Optional[datetime] = None
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for database storage"""
+        data = asdict(self)
+        if self.created_at:
+            data['created_at'] = self.created_at.isoformat()
+        # Keep feedback_points as list - Supabase will convert to JSONB automatically
+        return {k: v for k, v in data.items() if v is not None}
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Analysis':
+        """Create Analysis from dictionary"""
+        if data.get('created_at'):
+            data['created_at'] = parser.isoparse(data['created_at'])
+        # Handle feedback_points - it might be a JSON string or already a list
+        if data.get('feedback_points') and isinstance(data['feedback_points'], str):
+            data['feedback_points'] = json.loads(data['feedback_points'])
+        # Filter out keys that aren't in the dataclass
+        known_fields = {f.name for f in fields(cls)}
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered_data)
+
+
+@dataclass
+class WiFiNetwork:
+    """WiFi network model - stores saved WiFi credentials for devices"""
+    id: Optional[str] = None
+    device_id: str = ""  # Tuya device UUID
+    ssid: str = ""
+    password: str = ""
+    is_active: bool = True  # Currently active network for this device
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for database storage"""
+        data = asdict(self)
+        if self.created_at:
+            data['created_at'] = self.created_at.isoformat()
+        if self.updated_at:
+            data['updated_at'] = self.updated_at.isoformat()
+        return {k: v for k, v in data.items() if v is not None}
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'WiFiNetwork':
+        """Create WiFiNetwork from dictionary"""
+        if data.get('created_at'):
+            data['created_at'] = parser.isoparse(data['created_at'])
+        if data.get('updated_at'):
+            data['updated_at'] = parser.isoparse(data['updated_at'])
+        # Filter out keys that aren't in the dataclass
+        known_fields = {f.name for f in fields(cls)}
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered_data)

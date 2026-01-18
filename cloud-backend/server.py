@@ -20,7 +20,7 @@ from gtts import gTTS
 from analysis.audio_analyzer import AudioAnalyzer
 from analysis.coach import AICoach
 from auth.auth_utils import require_auth
-from database.repository import RecordingRepository, SheetMusicRepository, DeviceRepository, AnalysisRepository
+from database.repository import RecordingRepository, SheetMusicRepository, DeviceRepository, AnalysisRepository, WiFiNetworkRepository
 from database.models import Recording, SheetMusic, Analysis
 from database.models import Recording, SheetMusic
 
@@ -427,6 +427,98 @@ def get_device_status():
         })
 
 
+@app.route('/api/device/wifi-network', methods=['GET'])
+def get_device_wifi_network():
+    """
+    Get the active WiFi network for a device (called by firmware).
+    Uses X-User-ID header to identify the device.
+    Returns the active WiFi network credentials if available.
+    """
+    try:
+        device_id = request.headers.get('X-User-ID', '')
+        print(f"[/api/device/wifi-network] Device: '{device_id}'")
+        
+        if not device_id:
+            return jsonify({
+                'has_network': False,
+                'error': 'X-User-ID header required'
+            }), 400
+        
+        # Get active WiFi network for this device
+        wifi_network = WiFiNetworkRepository.get_active_network(device_id)
+        
+        if wifi_network:
+            return jsonify({
+                'has_network': True,
+                'ssid': wifi_network.ssid,
+                'password': wifi_network.password
+            })
+        else:
+            return jsonify({
+                'has_network': False,
+                'message': 'No saved WiFi network found for this device'
+            })
+            
+    except Exception as e:
+        print(f"Error fetching WiFi network: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/device/wifi-network', methods=['POST'])
+def save_device_wifi_network():
+    """
+    Save WiFi network credentials for a device (called by firmware).
+    Uses X-User-ID header to identify the device.
+    Expected JSON body: {"ssid": "NetworkName", "password": "password123"}
+    """
+    try:
+        device_id = request.headers.get('X-User-ID', '')
+        print(f"[/api/device/wifi-network] POST request from device: '{device_id}'")
+        print(f"[/api/device/wifi-network] Request headers: {dict(request.headers)}")
+        print(f"[/api/device/wifi-network] Request data: {request.data}")
+        
+        if not device_id:
+            print("[/api/device/wifi-network] ERROR: No X-User-ID header")
+            return jsonify({'error': 'X-User-ID header required'}), 400
+        
+        data = request.json
+        if not data:
+            print("[/api/device/wifi-network] ERROR: No JSON body")
+            return jsonify({'error': 'JSON body required'}), 400
+        
+        print(f"[/api/device/wifi-network] Parsed JSON: {data}")
+        
+        ssid = data.get('ssid', '').strip()
+        password = data.get('password', '').strip()
+        
+        print(f"[/api/device/wifi-network] SSID: '{ssid}', Password length: {len(password)}")
+        
+        if not ssid:
+            print("[/api/device/wifi-network] ERROR: Empty SSID")
+            return jsonify({'error': 'ssid is required'}), 400
+        
+        # Save WiFi network (this will deactivate other networks and activate this one)
+        print(f"[/api/device/wifi-network] Calling WiFiNetworkRepository.save_network...")
+        wifi_network = WiFiNetworkRepository.save_network(device_id, ssid, password)
+        
+        print(f"[/api/device/wifi-network] Successfully saved network '{ssid}' for device '{device_id}'")
+        print(f"[/api/device/wifi-network] WiFi network ID: {wifi_network.id}")
+        
+        return jsonify({
+            'success': True,
+            'message': f'WiFi network "{ssid}" saved successfully',
+            'ssid': wifi_network.ssid
+        })
+        
+    except Exception as e:
+        print(f"Error saving WiFi network: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/device/recordings', methods=['GET'])
 def get_device_recordings():
     """
@@ -608,7 +700,10 @@ def analyze_device_recording():
         
         if not sheet_music.audiveris_raw_output:
             return jsonify({
-                'feedback': 'Sheet music has no analysis data. Please re-upload in the app.'
+                'feedback': 'Sheet music has no analysis data. Please re-upload in the app.',
+                'score': 0,
+                'strength': 'Sheet music needs analysis',
+                'improvement': 'Please re-upload the sheet music in the app to analyze it.'
             })
         
         # Construct MIDI URL from recording ID
@@ -618,87 +713,160 @@ def analyze_device_recording():
         
         print(f"[/api/device/analyze] Recording: {recording_id}, Sheet: {sheet_music_id}")
         print(f"[/api/device/analyze] MIDI URL: {midi_url}")
+
+        # Create a pending analysis record first (so firmware can poll for it)
+        import json as json_lib
+        import uuid
+        import threading
         
-        # Analyze with AI coach using MIDI vs sheet music
+        analysis_id = str(uuid.uuid4())
+        
+        # Create initial pending analysis
         try:
-            feedback = ai_coach.analyze_midi_vs_sheet(
-                midi_url=midi_url,
-                musicxml_reference=sheet_music.audiveris_raw_output
+            analysis = Analysis(
+                id=analysis_id,
+                user_id=user_id,
+                recording_id=recording_id,
+                sheet_music_id=sheet_music_id,
+                score=0,
+                strength="Processing...",
+                improvement="Please wait...",
+                feedback_points=[],
+                full_feedback="",
+                recording_title=recording.title,
+                sheet_music_title=sheet_music.title,
+                status="pending"
             )
-            
-            # Parse the structured feedback to extract score, strength, and improvement
-            import re
-            score = 0
-            strength = ""
-            improvement = ""
-            
-            # Extract score (e.g., "Score: 7/10")
-            score_match = re.search(r'Score:\s*(\d+)/10', feedback, re.IGNORECASE)
-            if score_match:
-                score = int(score_match.group(1))
-            
-            # Extract strength (e.g., "Strength: text here.")
-            strength_match = re.search(r'Strength:\s*([^.]+(?:\.[^.]*)?)', feedback, re.IGNORECASE)
-            if strength_match:
-                strength = strength_match.group(1).strip().rstrip('.')
-            
-            # Extract improvement (e.g., "Improve: text here.")
-            improve_match = re.search(r'Improve:\s*([^.]+(?:\.[^.]*)?)', feedback, re.IGNORECASE)
-            if improve_match:
-                improvement = improve_match.group(1).strip().rstrip('.')
-            
-            # Save analysis to database
+            AnalysisRepository.create(analysis)
+            print(f"[/api/device/analyze] Created pending analysis: {analysis_id}")
+        except Exception as db_err:
+            print(f"[/api/device/analyze] Failed to create pending analysis: {db_err}")
+            return jsonify({'error': 'Failed to start analysis'}), 500
+
+        # Run Gemini analysis in background thread
+        def run_analysis_background():
             try:
-                analysis = Analysis(
-                    user_id=user_id,
-                    recording_id=recording_id,
-                    sheet_music_id=sheet_music_id,
+                print(f"[BACKGROUND] Starting Gemini analysis for {analysis_id}...")
+                feedback = ai_coach.analyze_midi_vs_sheet(
+                    midi_url=midi_url,
+                    musicxml_reference=sheet_music.audiveris_raw_output
+                )
+                
+                score = 0
+                strength = "Good effort overall!"
+                improvement = "Keep practicing to improve!"
+                feedback_points = []
+                
+                try:
+                    feedback_data = json_lib.loads(feedback)
+                    score = int(feedback_data.get('score', 0))
+                    strength = feedback_data.get('strength', '') or "Good effort overall!"
+                    improvement = feedback_data.get('improvement', '') or "Keep practicing to improve!"
+                    feedback_points = feedback_data.get('feedback_points', [])
+                    print(f"[BACKGROUND] Parsed - score: {score}, strength: {strength[:50]}...")
+                except (json_lib.JSONDecodeError, KeyError, ValueError) as e:
+                    print(f"[BACKGROUND] Failed to parse JSON: {e}")
+                    if feedback and len(feedback) > 0:
+                        improvement = feedback[:500]
+
+                # Update analysis with results
+                AnalysisRepository.update_status(
+                    analysis_id=analysis_id,
+                    status="complete",
                     score=score,
                     strength=strength,
                     improvement=improvement,
-                    full_feedback=feedback,
-                    recording_title=recording.title,
-                    sheet_music_title=sheet_music.title
+                    feedback_points=feedback_points,
+                    full_feedback=feedback
                 )
-                saved_analysis = AnalysisRepository.create(analysis)
-                print(f"[/api/device/analyze] Analysis saved with ID: {saved_analysis.id}, Score: {score}")
-            except Exception as db_error:
-                print(f"[/api/device/analyze] Failed to save analysis to DB: {db_error}")
-                # Continue anyway - don't fail the response
-            
-            # Use make_response to explicitly set headers
-            # This helps firmware HTTP clients know when response is complete
-            from flask import make_response
-            import json as json_lib
-            response_data = json_lib.dumps({
-                'feedback': feedback,
-                'recording_title': recording.title,
-                'sheet_music_title': sheet_music.title
-            })
-            resp = make_response(response_data)
-            resp.headers['Content-Type'] = 'application/json'
-            resp.headers['Content-Length'] = len(response_data)
-            resp.headers['Connection'] = 'close'
-            print(f"[/api/device/analyze] Response length: {len(response_data)} bytes")
-            return resp
-            
-        except Exception as ai_error:
-            print(f"AI analysis error: {ai_error}")
-            import json as json_lib
-            response_data = json_lib.dumps({
-                'feedback': f'Analysis failed: {str(ai_error)}'
-            })
-            resp = make_response(response_data)
-            resp.headers['Content-Type'] = 'application/json'
-            resp.headers['Content-Length'] = len(response_data)
-            resp.headers['Connection'] = 'close'
-            return resp
+                print(f"[BACKGROUND] Analysis {analysis_id} completed with score {score}")
+                
+            except Exception as e:
+                print(f"[BACKGROUND] Gemini analysis error: {e}")
+                import traceback
+                traceback.print_exc()
+                AnalysisRepository.update_status(
+                    analysis_id=analysis_id,
+                    status="error",
+                    score=0,
+                    strength="Analysis failed",
+                    improvement=f"Error: {str(e)[:200]}",
+                    feedback_points=[],
+                    full_feedback=""
+                )
+
+        thread = threading.Thread(target=run_analysis_background)
+        thread.daemon = True
+        thread.start()
+
+        # Return immediately with analysis_id for polling
+        print(f"[/api/device/analyze] Returning analysis_id: {analysis_id}")
+        return jsonify({
+            'analysis_id': analysis_id,
+            'status': 'pending',
+            'message': 'Analysis started'
+        })
         
     except Exception as e:
         print(f"Error analyzing device recording: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/device/analyze/<analysis_id>', methods=['GET'])
+def poll_device_analysis(analysis_id):
+    """
+    Poll for analysis results. Firmware calls this repeatedly until status is 'complete'.
+    """
+    try:
+        import re
+        
+        # Clean string for firmware display
+        def clean_for_firmware(text, max_len=80):
+            if not text:
+                return "Good effort"
+            clean = re.sub(r'[^a-zA-Z0-9 .,]', ' ', text)
+            clean = re.sub(r' +', ' ', clean).strip()
+            if len(clean) > max_len:
+                clean = clean[:max_len]
+            return clean
+        
+        analysis = AnalysisRepository.get_by_id(analysis_id)
+        if not analysis:
+            return jsonify({'error': 'Analysis not found', 'status': 'error'}), 404
+        
+        status = getattr(analysis, 'status', 'complete')  # Default to complete for old records
+        
+        if status == 'pending':
+            print(f"[/api/device/analyze/{analysis_id}] Status: pending")
+            return jsonify({
+                'status': 'pending',
+                'message': 'Analysis in progress'
+            })
+        elif status == 'error':
+            print(f"[/api/device/analyze/{analysis_id}] Status: error")
+            return jsonify({
+                'status': 'error',
+                'score': 0,
+                'strength': clean_for_firmware(analysis.strength, 80),
+                'improvement': clean_for_firmware(analysis.improvement, 80)
+            })
+        else:
+            # Complete
+            print(f"[/api/device/analyze/{analysis_id}] Status: complete, score={analysis.score}")
+            return jsonify({
+                'status': 'complete',
+                'score': analysis.score,
+                'strength': clean_for_firmware(analysis.strength, 80),
+                'improvement': clean_for_firmware(analysis.improvement, 80)
+            })
+            
+    except Exception as e:
+        print(f"Error polling analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
 @app.route('/api/analyses', methods=['GET'])

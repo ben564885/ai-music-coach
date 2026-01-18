@@ -5,7 +5,7 @@ Database repository for CRUD operations
 from typing import List, Optional
 from datetime import datetime
 from database.supabase_client import get_supabase_client
-from database.models import Recording, SheetMusic, Device
+from database.models import Recording, SheetMusic, Device, Analysis, WiFiNetwork
 
 
 class RecordingRepository:
@@ -191,4 +191,185 @@ class DeviceRepository:
         supabase.table('devices').update({
             'last_upload_at': datetime.utcnow().isoformat()
         }).eq('device_id', device_id).execute()
+
+
+class AnalysisRepository:
+    """Repository for analysis operations - stores AI feedback results"""
+    
+    @staticmethod
+    def create(analysis: Analysis) -> Analysis:
+        """Create a new analysis entry"""
+        supabase = get_supabase_client()
+        data = analysis.to_dict()
+        data['created_at'] = datetime.utcnow().isoformat()
+        
+        result = supabase.table('analyses').insert(data).execute()
+        if result.data:
+            return Analysis.from_dict(result.data[0])
+        raise Exception("Failed to create analysis")
+    
+    @staticmethod
+    def get_by_id(analysis_id: str) -> Optional[Analysis]:
+        """Get analysis by ID"""
+        supabase = get_supabase_client()
+        result = supabase.table('analyses').select('*').eq('id', analysis_id).execute()
+        if result.data:
+            return Analysis.from_dict(result.data[0])
+        return None
+    
+    @staticmethod
+    def get_by_user(user_id: str, limit: int = 50) -> List[Analysis]:
+        """Get all analyses for a user, ordered by most recent first"""
+        supabase = get_supabase_client()
+        result = supabase.table('analyses')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .order('created_at', desc=True)\
+            .limit(limit)\
+            .execute()
+        
+        return [Analysis.from_dict(item) for item in result.data] if result.data else []
+    
+    @staticmethod
+    def get_by_recording(recording_id: str) -> List[Analysis]:
+        """Get all analyses for a specific recording"""
+        supabase = get_supabase_client()
+        result = supabase.table('analyses')\
+            .select('*')\
+            .eq('recording_id', recording_id)\
+            .order('created_at', desc=True)\
+            .execute()
+        
+        return [Analysis.from_dict(item) for item in result.data] if result.data else []
+    
+    @staticmethod
+    def delete(analysis_id: str) -> bool:
+        """Delete an analysis"""
+        supabase = get_supabase_client()
+        result = supabase.table('analyses').delete().eq('id', analysis_id).execute()
+        return result.data is not None
+    
+    @staticmethod
+    def update_status(analysis_id: str, status: str, score: int = 0, 
+                      strength: str = "", improvement: str = "",
+                      feedback_points: list = None, full_feedback: str = "") -> bool:
+        """Update an analysis with results"""
+        supabase = get_supabase_client()
+        update_data = {
+            'status': status,
+            'score': score,
+            'strength': strength,
+            'improvement': improvement,
+            'full_feedback': full_feedback
+        }
+        if feedback_points is not None:
+            update_data['feedback_points'] = feedback_points
+        
+        result = supabase.table('analyses')\
+            .update(update_data)\
+            .eq('id', analysis_id)\
+            .execute()
+        return result.data is not None
+
+
+class WiFiNetworkRepository:
+    """Repository for WiFi network operations"""
+    
+    @staticmethod
+    def get_active_network(device_id: str) -> Optional[WiFiNetwork]:
+        """Get the active WiFi network for a device"""
+        supabase = get_supabase_client()
+        result = supabase.table('wifi_networks')\
+            .select('*')\
+            .eq('device_id', device_id)\
+            .eq('is_active', True)\
+            .limit(1)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            return WiFiNetwork.from_dict(result.data[0])
+        return None
+    
+    @staticmethod
+    def get_all_networks(device_id: str) -> List[WiFiNetwork]:
+        """Get all WiFi networks for a device"""
+        supabase = get_supabase_client()
+        result = supabase.table('wifi_networks')\
+            .select('*')\
+            .eq('device_id', device_id)\
+            .order('created_at', desc=True)\
+            .execute()
+        
+        return [WiFiNetwork.from_dict(item) for item in result.data] if result.data else []
+    
+    @staticmethod
+    def save_network(device_id: str, ssid: str, password: str) -> WiFiNetwork:
+        """Save or update a WiFi network for a device"""
+        print(f"[WiFiNetworkRepository] save_network called: device_id='{device_id}', ssid='{ssid}'")
+        supabase = get_supabase_client()
+        
+        # First, deactivate all other networks for this device
+        print(f"[WiFiNetworkRepository] Deactivating other networks for device '{device_id}'")
+        supabase.table('wifi_networks')\
+            .update({'is_active': False})\
+            .eq('device_id', device_id)\
+            .execute()
+        
+        # Check if this network already exists
+        print(f"[WiFiNetworkRepository] Checking for existing network...")
+        existing = supabase.table('wifi_networks')\
+            .select('*')\
+            .eq('device_id', device_id)\
+            .eq('ssid', ssid)\
+            .limit(1)\
+            .execute()
+        
+        if existing.data and len(existing.data) > 0:
+            # Update existing network
+            print(f"[WiFiNetworkRepository] Updating existing network (id={existing.data[0]['id']})")
+            result = supabase.table('wifi_networks')\
+                .update({
+                    'password': password,
+                    'is_active': True,
+                    'updated_at': 'now()'
+                })\
+                .eq('id', existing.data[0]['id'])\
+                .execute()
+            
+            print(f"[WiFiNetworkRepository] Update result: {result.data}")
+            if result.data and len(result.data) > 0:
+                return WiFiNetwork.from_dict(result.data[0])
+        else:
+            # Create new network
+            print(f"[WiFiNetworkRepository] Creating new network...")
+            wifi_network = WiFiNetwork(
+                device_id=device_id,
+                ssid=ssid,
+                password=password,
+                is_active=True
+            )
+            
+            network_dict = wifi_network.to_dict()
+            print(f"[WiFiNetworkRepository] Inserting: {network_dict}")
+            
+            result = supabase.table('wifi_networks')\
+                .insert(network_dict)\
+                .execute()
+            
+            print(f"[WiFiNetworkRepository] Insert result: {result.data}")
+            if result.data and len(result.data) > 0:
+                return WiFiNetwork.from_dict(result.data[0])
+        
+        raise Exception(f"Failed to save WiFi network: device_id={device_id}, ssid={ssid}")
+    
+    @staticmethod
+    def delete_network(device_id: str, ssid: str) -> bool:
+        """Delete a WiFi network for a device"""
+        supabase = get_supabase_client()
+        result = supabase.table('wifi_networks')\
+            .delete()\
+            .eq('device_id', device_id)\
+            .eq('ssid', ssid)\
+            .execute()
+        return result.data is not None
 
