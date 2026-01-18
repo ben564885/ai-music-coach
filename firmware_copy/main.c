@@ -42,22 +42,39 @@
 #define TAG "practicepod"
 
 // =================================================================
-// PRODUCT CONFIGURATION
-// You MUST obtain these from the Tuya IoT Platform (iot.tuya.com)
-// Create a "Wi-Fi + BLE" Product to get them.
+// FIRMWARE CONFIGURATION
 // =================================================================
-#define PRODUCT_KEY "qdqsfcjifdin8t1t"              // REPLACE WITH YOUR PID
-#define DEVICE_UUID "uuid2395651a4cae9262"          // REPLACE WITH YOUR UUID
-#define AUTH_KEY "dzVrgPGISjLsVkzmpjFTNYKWHM3GzIws" // REPLACE WITH YOUR AUTHKEY
+// SECURITY: Credentials are loaded from config.h (not committed to git)
+// 
+// Setup:
+// 1. Copy config.h.example to config.h: cp config.h.example config.h
+// 2. Edit config.h with your actual credentials from Tuya IoT Platform
+// 3. See README.md for detailed instructions
 // =================================================================
+#include "config.h"
 
-// IMPORTANT: This must be the IP of your computer on the Hackathon network
-// network Connect your computer to the Hackathon network, then find its IP
-// (e.g., 10.0.0.x) and update this value. The device and computer must be on
-// the same network.
-#define CLOUD_BACKEND_HOST "10.0.0.146"
-#define CLOUD_BACKEND_PORT 5001
-#define CLOUD_BACKEND_PATH "/api/firmware/upload"
+// Verify that config.h was included and has valid values
+#ifndef PRODUCT_KEY
+#error "config.h not found! Copy config.h.example to config.h and fill in your credentials."
+#endif
+
+// Basic validation - check if still using placeholder values
+// Note: This is a simple check - users should verify their actual values
+#if PRODUCT_KEY[0] == 'Y'
+#warning "PRODUCT_KEY appears to be a placeholder. Edit config.h with your actual Tuya Product Key."
+#endif
+
+#if DEVICE_UUID[0] == 'Y'
+#warning "DEVICE_UUID appears to be a placeholder. Edit config.h with your actual Device UUID."
+#endif
+
+#if AUTH_KEY[0] == 'Y'
+#warning "AUTH_KEY appears to be a placeholder. Edit config.h with your actual Auth Key."
+#endif
+
+#if CLOUD_BACKEND_HOST[0] == 'Y'
+#warning "CLOUD_BACKEND_HOST appears to be a placeholder. Edit config.h with your backend server IP address."
+#endif
 
 #define SYMBOL_MIC "\xEF\x84\xB0"
 

@@ -56,4 +56,5 @@ firmware/.env
 firmware/.build/
 firmware_copy/.env
 firmware_copy/.build/
+firmware_copy/config.h
 TuyaOpen/

@@ -2,7 +2,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class ApiConfig {
   /// Get the backend API base URL from environment variables
-  /// Falls back to localhost:5001 if not set
+  /// REQUIRED: Set BACKEND_URL in .env file
   static String get backendUrl {
     // Try environment variable first
     final envUrl = dotenv.env['BACKEND_URL'] ?? dotenv.env['API_URL'];
@@ -11,8 +11,13 @@ class ApiConfig {
       return envUrl;
     }
     
-    // Fallback to default (can be changed here or via .env file)
-    return 'http://192.168.34.95:5001';
+    // No fallback - user must configure .env file
+    throw Exception(
+      'BACKEND_URL not configured!\n\n'
+      'Please create a .env file in mobile_app_flutter/ with:\n'
+      'BACKEND_URL=http://your-backend-ip:5001\n\n'
+      'See README.md for setup instructions.'
+    );
   }
   
   /// Get the full URL for a specific API endpoint

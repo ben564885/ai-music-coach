@@ -32,9 +32,19 @@ C firmware for the Tuya T5AI development board:
 
 **Setup**: 
 1. `cd firmware_copy`
-2. Edit `main.c` to set your Wi-Fi credentials and backend host
+2. **Configure credentials** (REQUIRED):
+   ```bash
+   cp config.h.example config.h
+   # Edit config.h with your actual credentials:
+   # - PRODUCT_KEY: From Tuya IoT Platform (iot.tuya.com)
+   # - DEVICE_UUID: From Tuya IoT Platform
+   # - AUTH_KEY: From Tuya IoT Platform (device Auth Key)
+   # - CLOUD_BACKEND_HOST: Your backend server IP (e.g., "192.168.1.100")
+   ```
 3. `tos.py build` (requires Tuya TuyaOpen SDK)
 4. `tos.py flash` to upload to T5AI device
+
+**Security Note**: `config.h` contains sensitive credentials and is excluded from git. Never commit it.
 
 ### Mobile App (`mobile_app_flutter/`)
 Cross-platform Flutter app for iOS and Android:
@@ -47,8 +57,17 @@ Cross-platform Flutter app for iOS and Android:
 **Setup**: 
 1. `cd mobile_app_flutter`
 2. `flutter pub get`
-3. Update `lib/utils/api_config.dart` with your backend URL
+3. **Configure backend URL** (REQUIRED):
+   ```bash
+   cp .env.example .env
+   # Edit .env and set:
+   # BACKEND_URL=http://your-backend-ip:5001
+   # EXPO_PUBLIC_SUPABASE_URL=your-supabase-url
+   # EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+   ```
 4. `flutter run`
+
+**Security Note**: `.env` contains sensitive credentials and is excluded from git. Never commit it.
 
 ### Cloud Backend (`cloud-backend/`)
 Python Flask server for audio analysis and OMR:
@@ -153,10 +172,21 @@ PORT=5001
 Update `mobile_app_flutter/lib/utils/api_config.dart` with your backend URL (e.g., `http://192.168.1.100:5001`)
 
 ### Firmware
-Edit `firmware_copy/main.c`:
-- `CLOUD_BACKEND_HOST` - Your backend IP address
-- `USER_SSID` / `USER_PASSWORD` - Your Wi-Fi credentials
-- `DEVICE_UUID` - Your Tuya device UUID
+**SECURITY**: Credentials are stored in `firmware_copy/config.h` (not in git).
+
+1. Copy the template:
+   ```bash
+   cd firmware_copy
+   cp config.h.example config.h
+   ```
+
+2. Edit `config.h` with your credentials:
+   - `PRODUCT_KEY` - From Tuya IoT Platform (iot.tuya.com)
+   - `DEVICE_UUID` - From Tuya IoT Platform
+   - `AUTH_KEY` - From Tuya IoT Platform (device Auth Key)
+   - `CLOUD_BACKEND_HOST` - Your backend server IP address
+
+3. **Never commit `config.h` to git** - it's in `.gitignore`
 
 ## Documentation
 
@@ -170,9 +200,24 @@ Edit `firmware_copy/main.c`:
 ## Quick Start
 
 1. **Backend**: Set up Supabase account, configure `.env`, run Flask server
-2. **Firmware**: Flash T5AI device with correct Wi-Fi and backend IP
-3. **Mobile**: Install Flutter app, sign in with Google, pair device via BLE
+2. **Firmware**: Copy `config.h.example` to `config.h`, fill in credentials, build and flash
+3. **Mobile**: Copy `.env.example` to `.env`, configure backend URL and Supabase keys, run app
 4. **Practice**: Upload sheet music, record on device, get AI coaching feedback!
+
+## Security
+
+**IMPORTANT**: This project contains sensitive credentials that must be configured:
+
+- **Firmware**: `firmware_copy/config.h` - Contains Tuya device credentials and backend IP
+- **Backend**: `cloud-backend/.env` - Contains API keys and database credentials
+- **Mobile App**: `mobile_app_flutter/.env` - Contains backend URL and Supabase keys
+
+**Security Best Practices**:
+- ✅ Never commit `.env` or `config.h` files to git (they're in `.gitignore`)
+- ✅ Use `.env.example` and `config.h.example` as templates
+- ✅ Rotate API keys if they're accidentally exposed
+- ✅ Use different credentials for development and production
+- ✅ Keep your Tuya Auth Key secret - it authenticates your device
 
 ## License
 

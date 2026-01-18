@@ -1,0 +1,45 @@
+/**
+ * Firmware Configuration Template
+ * 
+ * SECURITY WARNING: This file contains sensitive credentials.
+ * 
+ * 1. Copy this file to config.h:
+ *    cp config.h.example config.h
+ * 
+ * 2. Fill in your actual credentials from Tuya IoT Platform (iot.tuya.com)
+ * 
+ * 3. NEVER commit config.h to git - it's in .gitignore
+ */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// =================================================================
+// TUYA IOT PLATFORM CREDENTIALS
+// =================================================================
+// Get these from: https://iot.tuya.com
+// 1. Create a "Wi-Fi + BLE" Product
+// 2. Get Product Key (PID) from product details
+// 3. Create a device and get Device UUID and Auth Key
+// =================================================================
+
+#define PRODUCT_KEY "YOUR_PRODUCT_KEY_HERE"        // Replace with your PID from Tuya IoT Platform
+#define DEVICE_UUID "YOUR_DEVICE_UUID_HERE"        // Replace with your device UUID
+#define AUTH_KEY "YOUR_AUTH_KEY_HERE"              // Replace with your device Auth Key
+
+// =================================================================
+// CLOUD BACKEND CONFIGURATION
+// =================================================================
+// Set this to your backend server's IP address on your local network
+// The device and computer must be on the same network.
+// 
+// To find your computer's IP:
+//   - macOS/Linux: ifconfig | grep "inet " | grep -v 127.0.0.1
+//   - Windows: ipconfig | findstr IPv4
+// =================================================================
+
+#define CLOUD_BACKEND_HOST "YOUR_BACKEND_IP_HERE"  // e.g., "192.168.1.100" or "10.0.0.146"
+#define CLOUD_BACKEND_PORT 5001
+#define CLOUD_BACKEND_PATH "/api/firmware/upload"
+
+#endif // CONFIG_H
