@@ -19,6 +19,25 @@ An intelligent music practice assistant that analyzes musical performances and p
     (Hardware)              (UI)                      (Analysis)              (Storage + AI)
 ```
 
+## 3D Printed Enclosure
+
+The project includes 3D printable enclosure files for the PracticePod device:
+
+- **`PracticePod_Enclosure_Front.3mf`** - Front shell with display cutout and button access
+- **`PracticePod_Enclosure_Back.3mf`** - Back shell with battery module mounting
+
+### Battery Module Installation
+
+To make the device portable, you'll need a basic USB battery charging module (such as a TP4056-based board):
+
+1. **Mount the battery module** to the back of the T5AI board in place of the USB slot enclosure
+2. **Solder the battery output terminals** to the battery ground pins on the T5AI pin header:
+   - Connect the battery module's positive (+) output to the T5AI's battery positive pin
+   - Connect the battery module's negative (-) output to the T5AI's battery ground pin
+3. **Connect a 3.7V LiPo battery** to the charging module
+
+This allows the device to run on battery power and charge via USB when connected.
+
 ## Components
 
 ### T5AI Firmware (`firmware_copy/`)
